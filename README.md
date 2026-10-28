@@ -1,87 +1,92 @@
-# PrivatPenge – lokalt økonomi-dashboard
+# PrivatPenge – local personal finance dashboard
 
-Et personligt økonomi-dashboard, der kører på din egen computer. Det giver overblik over konti, løn, faste udgifter,
-forbrug, formue (bolig, depot, kunst m.m.), realkreditlån og backtest af porteføljer.
+A personal finance dashboard that runs on your own computer. It gives you an overview of your accounts, salary, fixed
+expenses, spending, net worth (home, brokerage account, art etc.), mortgage, and lets you backtest investment portfolios.
 
-Der følger **ingen rigtige data** med. Første gang du åbner dashboardet, kan du trykke **Indlæs demodata** og se det hele
-med en fiktiv person. Bagefter forbinder du din egen bank, og så bliver dine data på din egen computer.
+The app is built for Danish users, so the interface is in Danish. Button and menu names below are given in Danish
+with an English explanation.
 
-## Kom i gang
+**No real data is included.** The first time you open the dashboard, click **Indlæs demodata** (load demo data) to
+explore everything with a fictional person. Afterwards you connect your own bank, and your data stays on your own computer.
 
-Kræver [Node.js](https://nodejs.org) 20 eller nyere. Der skal ikke installeres andre pakker.
+## Getting started
+
+Requires [Node.js](https://nodejs.org) 20 or newer. No other packages need to be installed.
 
 ```bash
-git clone <repo-url> min-oekonomi
-cd min-oekonomi
+git clone https://github.com/TueAmm02/PrivatPenge.git
+cd PrivatPenge
 cp .env.example .env
 node server.js
 ```
 
-Åbn http://localhost:5180. På Mac kan du også dobbeltklikke på `Start dashboard.command`.
+Open http://localhost:5180. On a Mac you can also double-click `Start dashboard.command`.
 
-## Hvor ligger dine data?
+## Where is your data stored?
 
-| Sti | Indhold |
+| Path | Contents |
 |---|---|
-| `data/db.json` | Posteringer, faste poster, formue, lån og porteføljer |
-| `data/prices/` | Kursdata (cache) |
-| `keys/` | Din private nøgle til Enable Banking |
-| `.env` | Dit app-ID og din API-nøgle |
+| `data/db.json` | Transactions, fixed items, assets, loans and portfolios |
+| `data/prices/` | Price data (cache) |
+| `keys/` | Your private key for Enable Banking |
+| `.env` | Your app ID and API key |
 
-Alle fire står i `.gitignore` og kommer derfor aldrig med, hvis du laver ændringer og pusher til GitHub.
-Serveren lytter kun på `127.0.0.1`, så andre på netværket kan ikke se dashboardet. Data forlader kun computeren
-ved kald til din bank (via Enable Banking) og ved kursopslag hos Alpha Vantage.
+All four are listed in `.gitignore`, so they are never included if you make changes and push to GitHub.
+The server only listens on `127.0.0.1`, so other devices on your network cannot see the dashboard. Data only leaves
+your computer when the app calls your bank (via Enable Banking) and when it looks up prices at Alpha Vantage.
 
-## Forbind din bank (valgfrit)
+## Connect your bank (optional)
 
-Danske banker giver ikke privatpersoner direkte API-adgang. Adgangen går derfor gennem PSD2-tjenesten
-[Enable Banking](https://enablebanking.com), som er gratis, når man kun forbinder sine egne konti.
-**Hver person opretter sin egen applikation** – del aldrig din nøgle eller dit app-ID med andre.
+Danish banks do not offer private individuals direct API access. Access therefore goes through the PSD2 service
+[Enable Banking](https://enablebanking.com), which is free when you only connect your own accounts.
+**Everyone creates their own application** – never share your key or app ID with anyone.
 
-1. Opret en konto på https://enablebanking.com og gå til **Control Panel → API applications**.
-2. Opret en applikation i miljøet **Production** med redirect-URL `https://localhost:5180/api/eb/callback`.
-3. Gem den private nøgle, du får, som `keys/enablebanking.pem`.
-4. Indsæt app-ID'et i `.env` som `ENABLE_BANKING_APP_ID=` og ret `ENABLE_BANKING_REDIRECT_URL` til samme adresse som i trin 2.
-5. Aktivér applikationen ved at linke dine egne konti i Enable Bankings kontrolpanel, og genstart dashboardet.
-6. Gå til **Indstillinger → Forbind med MitID** og vælg din bank.
+1. Create an account at https://enablebanking.com and go to **Control Panel → API applications**.
+2. Create an application in the **Production** environment with the redirect URL `https://localhost:5180/api/eb/callback`.
+3. Save the private key you receive as `keys/enablebanking.pem`.
+4. Put the app ID in `.env` as `ENABLE_BANKING_APP_ID=` and set `ENABLE_BANKING_REDIRECT_URL` to the same address as in step 2.
+5. Activate the application by linking your own accounts in the Enable Banking control panel, then restart the dashboard.
+6. Go to **Indstillinger → Forbind med MitID** (Settings → Connect with MitID) and choose your bank.
 
-Efter MitID sender banken dig til `https://localhost…`, som browseren ikke kan åbne. Det er forventet:
-kopiér adressen fra adresselinjen og indsæt den i feltet **"Kom du ikke automatisk tilbage?"** under Indstillinger.
+After MitID, the bank sends you to `https://localhost…`, which the browser cannot open. This is expected:
+copy the address from the address bar and paste it into the field **"Kom du ikke automatisk tilbage?"**
+(didn't you return automatically?) under Settings.
 
-Adgangen gælder op til 90 dage og skal derefter fornyes med MitID. Mens serveren kører, hentes nye posteringer
-automatisk hver 6. time.
+Access is valid for up to 90 days and must then be renewed with MitID. While the server is running, new transactions
+are fetched automatically every 6 hours.
 
-**Uden bankforbindelse:** eksportér posteringer som CSV fra netbanken og træk filen ind under **Indstillinger**.
+**Without a bank connection:** export your transactions as CSV from your online bank and drag the file into **Indstillinger** (Settings).
 
-**Nordnet** har intet offentligt API for privatkunder. Depotværdien registreres under **Formue**.
+**Nordnet** has no public API for private customers. Enter the value of your account under **Formue** (net worth).
 
-## Bolig & lån
+## Home & mortgage
 
-Under **Formue** opretter du din bolig og under **Bolig & lån** dit realkreditlån (restgæld, rente, bidrag,
-afdragsfrihed og udløb – tallene står på låneoversigten hos realkreditinstituttet). Fanen viser restgæld over tid,
-hvornår betalingerne falder, boligens økonomi pr. måned inkl. lejeindtægt, og "hvad nu hvis"-scenarier
-(ekstraordinært afdrag, afdrag nu, anden rente). Rentefradraget regnes med en fast sats, som du selv sætter.
+Under **Formue** (net worth) you add your home, and under **Bolig & lån** (home & mortgage) you enter your mortgage:
+outstanding balance, interest rate, contribution fee (bidrag), interest-only period and maturity. You can find these
+figures in the loan overview from your mortgage lender. The tab shows the outstanding balance over time, when payments
+fall due, the monthly economy of the home including rental income, and "what if" scenarios: extra repayment,
+starting repayments now, or a different interest rate. The tax deduction is calculated with a flat rate that you set yourself.
 
-## Portefølje-test
+## Portfolio test
 
-Kursdata hentes fra Alpha Vantage. Hent en gratis nøgle på https://www.alphavantage.co/support/#api-key
-og sæt den i `.env` som `ALPHAVANTAGE_API_KEY=`. Den giver 25 opslag i døgnet, og kurser gemmes lokalt i 3 dage.
+Price data comes from Alpha Vantage. Get a free key at https://www.alphavantage.co/support/#api-key
+and put it in `.env` as `ALPHAVANTAGE_API_KEY=`. The free key allows 25 lookups per day, and prices are cached locally for 3 days.
 
-- Alle kurser omregnes til DKK med månedlige valutakurser.
-- **Fast afkast** (`FAST:3` = 3 % p.a.) bruges til aktiver uden kurs, fx bolig og kunst.
-- **Egne kursserier** kan uploades som CSV (`dato;kurs`), fx for danske investeringsforeninger.
-- Skat og handelsomkostninger er ikke medregnet. Eksempelporteføljerne er lærebogseksempler, ikke anbefalinger.
+- All prices are converted to DKK using monthly exchange rates.
+- **Fixed return** (`FAST:3` = 3 % per year) is used for assets without a market price, such as a home or art.
+- **Custom price series** can be uploaded as CSV (`date;price`), e.g. for Danish investment funds.
+- Taxes and trading costs are not included. The example portfolios are textbook examples, not recommendations.
 
-## Filer
+## Files
 
-| Fil | Indhold |
+| File | Contents |
 |---|---|
-| `server.js` | HTTP-server og API |
-| `lib/enablebanking.js` | PSD2-klient (JWT/RS256) |
-| `lib/csv.js` | Indlæsning af bank-CSV |
-| `lib/categorize.js` | Kategorier, regler og genkendelse af faste poster |
-| `lib/backtest.js` | Kursdata, valutaomregning og backtest |
-| `lib/demo.js` | Fiktive demodata |
-| `public/` | Brugerfladen |
+| `server.js` | HTTP server and API |
+| `lib/enablebanking.js` | PSD2 client (JWT/RS256) |
+| `lib/csv.js` | Bank CSV import |
+| `lib/categorize.js` | Categories, rules and detection of recurring items |
+| `lib/backtest.js` | Price data, currency conversion and backtest |
+| `lib/demo.js` | Fictional demo data |
+| `public/` | User interface |
 
-Dashboardet er et overblik, ikke økonomisk eller skattemæssig rådgivning.
+The dashboard is an overview tool, not financial or tax advice.
