@@ -324,10 +324,12 @@ function byMerchant(txs) {
   return Object.values(g).sort((a, b) => b.sum - a.sum);
 }
 
-// Køb i udenlandsk valuta grupperet pr. land med de steder, der står i teksten
+// Køb i udenlandsk valuta grupperet pr. land med de steder, der står i teksten.
+// MobilePay til en modtager i udlandet tæller ikke – det er modtageren, der er der, ikke dig.
 function abroad(txs) {
   const g = {};
   for (const t of txs) {
+    if (/^\s*(mobilepay|mob\.pay)/i.test(t.text)) continue;
     const info = merchantInfo(t.text);
     if (!info.currency || info.currency === 'DKK') continue;
     const c = CUR_COUNTRY[info.currency] || info.currency;
