@@ -281,7 +281,7 @@ function prettyText(text) {
 // ---------- Månedens referat ----------
 // Referatet bygges af posteringerne her i browseren – ingen AI eller eksterne kald.
 
-const CUR_COUNTRY = { SEK: 'Sverige', NOK: 'Norge', EUR: 'euroland', USD: 'USA', GBP: 'Storbritannien', CHF: 'Schweiz', PLN: 'Polen', CZK: 'Tjekkiet', HUF: 'Ungarn', ISK: 'Island', JPY: 'Japan', THB: 'Thailand' };
+const CUR_COUNTRY = { SEK: 'Sverige', NOK: 'Norge', EUR: 'euroland', USD: 'USA', GBP: 'Storbritannien', CAD: 'Canada', AUD: 'Australien', MXN: 'Mexico', TRY: 'Tyrkiet', CHF: 'Schweiz', PLN: 'Polen', CZK: 'Tjekkiet', HUF: 'Ungarn', ISK: 'Island', JPY: 'Japan', THB: 'Thailand' };
 const titleCase = (x) => (x && x === x.toUpperCase() ? x.toLowerCase().replace(/(^|[\s/&.-])(\p{L})/gu, (_, a, b) => a + b.toUpperCase()) : x);
 
 // Butiksnavn, sted og evt. udenlandsk valuta ud fra en rå posteringstekst
@@ -338,59 +338,93 @@ function abroad(txs) {
   return Object.values(g).sort((a, b) => b.sum - a.sum);
 }
 
+// Faste, men varierede formuleringer: samme måned giver altid samme tekst
+function picker(seed) {
+  let h = 0;
+  for (const c of seed) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return (xs) => xs[(h = (h * 1103515245 + 12345) >>> 0) % xs.length];
+}
+
 const CAT_PHRASE = {
-  'Restaurant & café': (n) => `Du spiste eller drak ude ${times(n)}`,
-  'Dagligvarer': (n) => `Du handlede dagligvarer ${times(n)}`,
-  'Shopping': (n) => `Du købte ind ${times(n)}`,
-  'Transport': (n) => `Du betalte for transport ${times(n)}`,
-  'Rejser': (n) => `Du havde ${n} rejseudgifter`,
-  'Fritid': (n) => `Du brugte penge på fritid ${times(n)}`,
+  'Restaurant & café': (n, t) => n >= 10
+    ? [`${n} gange ude at spise eller drikke for ${t}. Køkkenet derhjemme er begyndt at samle støv.`, `Du spiste eller drak ude ${times(n)} for ${t}. Tjenerne kender sikkert dit navn nu.`]
+    : [`Køkkenet holdt fri ${times(n)}, og det kostede ${t}.`, `${n === 1 ? 'Én gang' : `${n} gange`} valgte du en tjener frem for opvasken. Prisen var ${t}.`],
+  'Dagligvarer': (n, t) => [`Du var i supermarkedet ${times(n)} og kom ud ${t} fattigere.`, `${n} indkøbsture for ${t}. Køleskabet siger tak.`],
+  'Shopping': (n, t) => [`Kortet fik luft i butikkerne ${times(n)}, og det blev til ${t}. Det var helt sikkert alt sammen nødvendigt.`, `${n} køb for ${t}. Ingen dømmer dig (højt).`],
+  'Transport': (n, t) => [`Du kom omkring ${times(n)} for ${t}. Benene var åbenbart ikke nok.`, `Transporten kostede ${t} fordelt på ${n} ture. Cyklen står og venter.`],
+  'Rejser': (n, t) => [`Eventyrlysten kostede ${t} fordelt på ${n} betalinger.`, `${n} rejseudgifter for ${t}. Verden er stor, og det samme er regningen.`],
+  'Fritid': (n, t) => [`Fritiden kostede ${t} fordelt på ${n} betalinger. Sjov er ikke gratis.`, `Du forkælede dig selv ${times(n)} for ${t}. Fortjent? Sikkert.`],
+  'Bolig': (n, t) => [`Taget over hovedet kostede ${t}. Det er svært at drille med, for det skal jo betales.`],
+  'Forsyning': (n, t) => [`Lys, varme og internet kostede ${t}. Husk at slukke lyset efter dig.`],
+  'Abonnementer': (n, t) => [`Abonnementerne trak ${t}. Bruger du dem nu også alle sammen?`],
 };
 
 function localSummary(m, cat, st, avg) {
   const txs = spendTxs(m, cat);
-  if (!txs.length) return ['Ingen forbrug i perioden.'];
+  if (!txs.length) return [cat ? 'Intet her. Pengepungen hviler.' : 'Ingen forbrug i perioden. Enten er du meget sparsommelig, eller også mangler der posteringer.'];
+  const pick = picker(`${m}|${cat || ''}`);
   const lines = [];
-  const out = { push: (x) => lines.push(x.replace(/kr\.\.$/, 'kr.')) };
+  const out = { push: (x) => lines.push(x.replace(/kr\.\./g, 'kr.')) };
   const top = (xs, k = 3) => andList(xs.slice(0, k).map((x) => `${x.name} (${x.n > 1 ? times(x.n) + ', ' : ''}${kr(x.sum)})`));
   const biggest = [...txs].sort((a, b) => a.amount - b.amount)[0];
   const trips = abroad(txs);
-  const tripText = trips.length ? `Du handlede i ${andList(trips.map((t) => `${t.country}${t.places.size ? ` (${andList([...t.places].slice(0, 4))})` : ''}`))} for i alt ${kr(sum(trips, (t) => t.sum))}.` : '';
+  const where = andList(trips.map((t) => `${t.country}${t.places.size ? ` (${andList([...t.places].slice(0, 4))})` : ''}`));
+  const tripText = trips.length ? pick([
+    `Kortet har været på tur i ${where} og brugt ${kr(sum(trips, (t) => t.sum))}.`,
+    `Pas på, den udenlandske valuta afslører dig: ${where} for i alt ${kr(sum(trips, (t) => t.sum))}.`,
+  ]) : '';
 
   if (cat) {
     const total = -sum(txs, (t) => t.amount);
-    const phrase = CAT_PHRASE[cat] ? CAT_PHRASE[cat](txs.length) : `${txs.length} ${txs.length === 1 ? 'postering' : 'posteringer'}`;
-    out.push(`${phrase} for i alt ${kr(total)}.`);
+    out.push(CAT_PHRASE[cat] ? pick(CAT_PHRASE[cat](txs.length, kr(total))) : `${txs.length} ${txs.length === 1 ? 'postering' : 'posteringer'} for i alt ${kr(total)}.`);
     const g = byMerchant(txs);
-    if (g.length > 1) out.push(`Mest hos ${top(g)}.`);
-    else if (txs.length > 1) out.push(`Alle hos ${g[0].name}.`);
-    if (txs.length > 1) out.push(`Største enkeltbeløb var ${merchantInfo(biggest.text).name} den ${dateShort(biggest.date)} på ${kr(-biggest.amount)}.`);
+    const stam = [...g].sort((a, b) => b.n - a.n)[0];
+    if (g.length > 1 && stam.n >= 3) {
+      out.push(`Stamstedet var ${stam.name} med ${times(stam.n)} og ${kr(stam.sum)}.`);
+      if (g[0] !== stam) out.push(`Flest penge røg dog hos ${g[0].name} (${kr(g[0].sum)}).`);
+    } else if (g.length > 1) out.push(`Mest hos ${top(g)}.`);
+    else if (txs.length > 1) out.push(`${txs.length === 2 ? 'Begge gange' : `Alle ${txs.length} gange`} hos ${g[0].name}. Loyalitet er en dyd.`);
+    if (txs.length > 1) out.push(pick([`Månedens største hug var ${merchantInfo(biggest.text).name} den ${dateShort(biggest.date)} til ${kr(-biggest.amount)}.`, `Den dyreste var ${merchantInfo(biggest.text).name} den ${dateShort(biggest.date)} med ${kr(-biggest.amount)}.`]));
     if (cat === 'Øvrigt') {
       const cats = Object.entries(txs.reduce((a, t) => ((a[t.category] = (a[t.category] || 0) - t.amount), a), {})).sort((a, b) => b[1] - a[1]);
-      out.push(`Fordelt på ${andList(cats.slice(0, 4).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
+      out.push(`Rodekassen består af ${andList(cats.slice(0, 4).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
     }
     if (tripText) out.push(tripText);
     const prev = avg && (cat === 'Øvrigt' ? sum(Object.entries(avg.byCat).filter(([c]) => !(c in CAT_COLOR)), ([, v]) => v) : avg.byCat[cat]);
-    if (prev > 0 && Math.abs(total - prev) >= 50) out.push(`Det er ${kr(Math.abs(total - prev))} ${total > prev ? 'mere' : 'mindre'} end dit gennemsnit for de foregående ${avg.n} måneder.`);
+    if (prev > 0 && Math.abs(total - prev) >= 50) {
+      const d = kr(Math.abs(total - prev));
+      if (total > prev * 1.5) out.push(`Det er ${d} over dit gennemsnit for de foregående ${avg.n} måneder. Hvad skete der lige der?`);
+      else if (total > prev) out.push(pick([`Det er ${d} mere end du plejer. Vi siger det ikke til nogen.`, `Det er ${d} over dit gennemsnit. Bare så du ved det.`]));
+      else out.push(pick([`Det er ${d} mindre end du plejer. Flot klaret!`, `Det er ${d} under dit gennemsnit. Pengepungen klapper.`]));
+    }
     return lines;
   }
 
-  out.push(`I ${monthLabel(m)} brugte du ${kr(st.spend)}${st.refunds > 0 ? `, efter at du fik ${kr(st.refunds)} tilbage via MobilePay og udlæg` : ''}.`);
+  const left = st.income - st.spend;
+  out.push(`I ${monthLabel(m)} slap der ${kr(st.spend)} ud af kontoen${st.refunds > 0 ? `, og så fik du endda ${kr(st.refunds)} tilbage via MobilePay og udlæg` : ''}.`);
+  if (st.income > 0) out.push(left >= 0
+    ? pick([`Der var ${kr(left)} tilbage af indkomsten. Godt gået!`, `Du holdt ${kr(left)} tilbage. Fremtidens dig siger tak.`])
+    : pick([`Det er ${kr(-left)} mere, end der kom ind. Opsparingen sukker.`, `Udgifterne slog indkomsten med ${kr(-left)}. Den må vi lige tale om.`]));
   const cats = Object.entries(st.byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  if (cats.length) out.push(`Mest gik til ${andList(cats.slice(0, 2).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
+  if (cats.length) out.push(`De største pengeslugere var ${andList(cats.slice(0, 2).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
   const part = (c) => byMerchant(txs.filter((t) => t.category === c));
   const eat = part('Restaurant & café');
-  if (eat.length) out.push(`Du spiste eller drak ude ${times(sum(eat, (x) => x.n))} for ${kr(sum(eat, (x) => x.sum))}, oftest hos ${andList([...eat].sort((a, b) => b.n - a.n).slice(0, 2).map((x) => x.name))}.`);
+  const nEat = sum(eat, (x) => x.n);
+  const fav = andList([...eat].sort((a, b) => b.n - a.n).slice(0, 2).map((x) => x.name));
+  if (eat.length) out.push(nEat >= 8
+    ? `Du spiste eller drak ude ${times(nEat)} for ${kr(sum(eat, (x) => x.sum))}, oftest hos ${fav}. Køkkenet savner dig.`
+    : `Du spiste eller drak ude ${times(nEat)} for ${kr(sum(eat, (x) => x.sum))}, oftest hos ${fav}.`);
+  else if (txs.length > 20) out.push('Du spiste ikke ude en eneste gang. Imponerende, eller bare lidt kedeligt?');
   const food = part('Dagligvarer');
-  if (food.length) out.push(`Dagligvarer købte du mest hos ${andList(food.slice(0, 2).map((x) => x.name))}.`);
+  if (food.length) out.push(pick([`Indkøbsvognen kørte mest rundt hos ${andList(food.slice(0, 2).map((x) => x.name))}.`, `Dagligvarerne kom mest fra ${andList(food.slice(0, 2).map((x) => x.name))}.`]));
   if (tripText) out.push(tripText);
   const travel = part('Rejser');
-  if (travel.length) out.push(`Rejseudgifter: ${top(travel)}.`);
+  if (travel.length) out.push(`Rejsekassen gik til ${top(travel)}.`);
   const shop = part('Shopping');
-  if (shop.length) out.push(`Du købte ind hos ${andList(shop.slice(0, 3).map((x) => x.name))}.`);
+  if (shop.length) out.push(pick([`Shoppingruten gik forbi ${andList(shop.slice(0, 3).map((x) => x.name))}.`, `Butikkerne ${andList(shop.slice(0, 3).map((x) => x.name))} siger tak for besøget.`]));
   const fixedKeys = new Set(S.state.fixed.map((f) => f.key));
   const big = txs.filter((t) => !fixedKeys.has(t.key) && t.category !== 'Bolig').sort((a, b) => a.amount - b.amount)[0];
-  if (big && -big.amount >= 500) out.push(`Største enkeltkøb var ${merchantInfo(big.text).name} (${big.category.toLowerCase()}) på ${kr(-big.amount)}.`);
+  if (big && -big.amount >= 500) out.push(`Månedens største hug var ${merchantInfo(big.text).name} (${big.category.toLowerCase()}) til ${kr(-big.amount)}.`);
   return lines;
 }
 

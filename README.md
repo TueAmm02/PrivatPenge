@@ -62,7 +62,7 @@ are fetched automatically every 6 hours.
 ## Monthly summary
 
 Below the spending chart on the front page there is a short summary of the month: where you ate, where you shopped,
-purchases abroad and the biggest purchase. Click a category in the chart to see a summary of just that category.
+purchases abroad and the biggest purchase – in a slightly teasing tone. Click a category in the chart to see a summary of just that category.
 The summary is written by the app itself from your transactions – no AI, no API key and nothing leaves your computer.
 
 ## Home & mortgage
