@@ -211,7 +211,7 @@ function monthEndBalances(months) {
 
 // ---------- routing ----------
 
-const VIEWS = { oversigt: viewOverview, posteringer: viewTransactions, faste: viewFixed, formue: viewWealth, bolig: viewHousing, portefolje: viewPortfolio, indstillinger: viewSettings };
+const VIEWS = { oversigt: viewOverview, posteringer: viewTransactions, faste: viewFixed, abonnementer: viewSubscriptions, formue: viewWealth, bolig: viewHousing, portefolje: viewPortfolio, indstillinger: viewSettings };
 
 function currentView() {
   const v = location.hash.slice(1).split('?')[0];
@@ -465,6 +465,7 @@ function viewOverview(el) {
 
   el.innerHTML = `
     ${S.state.hasDemo ? '<div class="banner">Du ser <b>demodata</b>. Fjern dem under Indstillinger, når du kobler dine egne konti på.</div>' : ''}
+    ${alertsBlock()}
     <div class="head">
       <div><h2>${monthLabel(m).replace(/^\w/, (c) => c.toUpperCase())}</h2><div class="sub">${isCurrent ? 'Indeværende måned – ikke afsluttet' : 'Månedens overblik'}</div></div>
       <div class="filters" style="margin:0">
@@ -515,6 +516,7 @@ function viewOverview(el) {
     </div>
     <p class="hint" style="margin-top:14px"><a href="#posteringer" id="seeAll">Se alle posteringer i ${monthLabel(m)} →</a></p>`;
 
+  bindAlerts();
   $('#monthSel').onchange = (e) => { S.month = e.target.value; render(); };
   $('#prevM').onclick = () => { S.month = months[months.indexOf(m) + 1]; render(); };
   $('#nextM').onclick = () => { S.month = months[months.indexOf(m) - 1]; render(); };
@@ -1240,6 +1242,87 @@ function bindLoanForm(home) {
   if ($('#lCancel')) $('#lCancel').onclick = () => { HS.editLoan = false; render(); };
 }
 
+// ---------- Alarmer ----------
+const ALERT_ICON = { rent: '🏠', income: '💸', bill: '🧾', sub: '🔁' };
+
+function alertsBlock() {
+  const as = S.state.alerts || [];
+  if (!as.length) return '';
+  return `<div class="alerts">${as.map((a) => `
+    <div class="alert"><span class="ai" aria-hidden="true">${ALERT_ICON[a.type] || '⚠️'}</span>
+      <div class="at"><b>${esc(a.title)}</b><div>${esc(a.message)}</div></div>
+      <button class="btn small ghost" data-dismiss="${esc(a.key)}" title="Skjul alarmen">Set</button></div>`).join('')}</div>`;
+}
+function bindAlerts() {
+  $$('[data-dismiss]').forEach((b) => (b.onclick = async () => { await api('POST', '/api/alerts/dismiss', { key: b.dataset.dismiss }); await refresh(); render(); }));
+}
+
+// ---------- Abonnementer ----------
+const SUB_GROUP_ORDER = ['Streaming & medier', 'Apps & software', 'Fitness & fritid', 'Medlemskaber', 'Mobil, internet & forsyning', 'Forsikringer', 'Andet'];
+const SUB_TEASE = (perYear) => perYear > 30000 ? 'Det er en brugt bil om året. Bare så du ved det.'
+  : perYear > 12000 ? 'Det er en weekendtur til Rom – hvert år.'
+  : perYear > 5000 ? 'Det svarer til en ny cykel om året.'
+  : 'Det er til at leve med.';
+
+async function viewSubscriptions(el) {
+  el.innerHTML = '<div class="head"><div><h2>Abonnementer</h2><div class="sub">Henter …</div></div></div>';
+  const all = await api('GET', '/api/subscriptions');
+  if (location.hash !== '#abonnementer') return;
+  const active = all.filter((s) => s.status === 'active' && !s.hidden);
+  const stopped = all.filter((s) => s.status === 'stopped' && !s.hidden && Date.now() - Date.parse(s.lastDate) < 365 * 86400000);
+  const hidden = all.filter((s) => s.hidden);
+  const perMonth = sum(active, (s) => s.perMonth);
+  const flagged = active.filter((s) => s.isNew || (s.priceChange && s.priceChange.to > s.priceChange.from));
+  const groups = SUB_GROUP_ORDER.map((g) => [g, active.filter((s) => s.group === g)]).filter(([, xs]) => xs.length);
+
+  const flags = (s) => [
+    s.isNew ? '<span class="pill warn">ny</span>' : '',
+    s.priceChange ? `<span class="pill ${s.priceChange.to > s.priceChange.from ? 'warn' : ''}">${s.priceChange.to > s.priceChange.from ? 'steget' : 'faldet'} fra ${kr(s.priceChange.from)}</span>` : '',
+    s.currency ? `<span class="pill">betales i ${esc(s.currency)}</span>` : '',
+  ].join(' ');
+  const row = (s, action) => `<tr>
+      <td class="text"><b>${esc(s.name)}</b> ${flags(s)}<div class="muted" style="font-size:12px">${esc(s.intervalLabel)} · ${s.status === 'active' ? `næste ca. ${dateShort(s.nextDate)}` : `sidst trukket ${dateShort(s.lastDate)}`} · ${s.count} træk siden ${dateShort(s.firstDate)}</div></td>
+      <td class="num">${kr(s.amount)}<div class="muted" style="font-size:12px">${s.interval === 'monthly' ? 'pr. md.' : `${kr(s.perMonth)} pr. md.`}</div></td>
+      <td class="num">${action(s)}</td></tr>`;
+  const hideBtn = (s) => `<button class="btn small ghost" data-subhide="${esc(s.key)}" title="Ikke et abonnement – skjul det">Skjul</button>`;
+
+  el.innerHTML = `
+    <div class="head"><div><h2>Abonnementer</h2><div class="sub">Alt der trækkes fast: streaming, apps, fitness, medlemskaber, mobil, internet og forsikringer</div></div></div>
+    ${alertsBlock()}
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Pr. måned</div><div class="value">${kr(perMonth)}</div><div class="delta">${active.length} aktive abonnementer</div></div>
+      <div class="card kpi"><div class="label">Pr. år</div><div class="value">${kr(perMonth * 12)}</div><div class="delta">${SUB_TEASE(perMonth * 12)}</div></div>
+      <div class="card kpi"><div class="label">Værd at kigge på</div><div class="value ${flagged.length ? 'neg' : ''}">${flagged.length}</div><div class="delta">${flagged.length ? 'nye eller dyrere abonnementer' : 'ingen nye eller dyrere'}</div></div>
+    </div>
+    <div class="grid cols-3-2">
+      <div class="stack">
+        ${groups.length ? groups.map(([g, xs]) => `
+          <div class="card">
+            <div class="row" style="display:flex;justify-content:space-between;align-items:baseline"><h3>${g}</h3><span class="muted">${kr(sum(xs, (s) => s.perMonth))} pr. md.</span></div>
+            <div class="table-wrap"><table class="subs"><tbody>${xs.map((s) => row(s, hideBtn)).join('')}</tbody></table></div>
+          </div>`).join('') : '<div class="card"><p class="muted">Ingen faste træk fundet endnu. De dukker op, når et abonnement er trukket mindst to gange.</p></div>'}
+        ${stopped.length ? `<div class="card"><h3>Stoppet inden for det seneste år</h3><p class="hint">Ikke trukket i et stykke tid – opsagt, eller betales de nu et andet sted?</p>
+          <div class="table-wrap"><table class="subs"><tbody>${stopped.map((s) => row(s, hideBtn)).join('')}</tbody></table></div></div>` : ''}
+        ${hidden.length ? `<div class="card"><h3>Skjult</h3><p class="hint">Træk du har markeret som "ikke et abonnement".</p>
+          <div class="table-wrap"><table class="subs"><tbody>${hidden.map((s) => row(s, (x) => `<button class="btn small ghost" data-subshow="${esc(x.key)}">Vis igen</button>`)).join('')}</tbody></table></div></div>` : ''}
+      </div>
+      <div class="stack">
+        <div class="card"><h3>Fordeling</h3><p class="hint">Pr. måned for aktive abonnementer</p><div class="chart"><canvas id="cSubs"></canvas></div></div>
+        <div class="card"><h3>Sådan virker det</h3>
+          <p class="hint" style="margin:0">Et træk bliver til et abonnement, når samme modtager har trukket et nogenlunde ens beløb med fast interval (måned, kvartal, halvår eller år). Faste poster i forsikring, forsyning, abonnementer og fritid kommer også med. Bolig, lån og almindeligt forbrug er ikke med.<br><br>
+          Du får en alarm, når et nyt abonnement dukker op, når et bliver dyrere, når en regning ikke er trukket, eller når husleje eller anden fast indtægt mangler. Notifikationer slås til og fra under <a href="#indstillinger">Indstillinger</a>.</p></div>
+      </div>
+    </div>`;
+
+  bindAlerts();
+  $$('[data-subhide]').forEach((b) => (b.onclick = async () => { await api('POST', '/api/subscriptions/hide', { key: b.dataset.subhide, hidden: true }); await refresh(); render(); }));
+  $$('[data-subshow]').forEach((b) => (b.onclick = async () => { await api('POST', '/api/subscriptions/hide', { key: b.dataset.subshow, hidden: false }); await refresh(); render(); }));
+  if (groups.length) {
+    const opts = baseOptions({ horizontal: true });
+    chart('cSubs', { type: 'bar', data: { labels: groups.map(([g]) => g), datasets: [{ label: 'Pr. måned', data: groups.map(([, xs]) => sum(xs, (s) => s.perMonth)), ...barStyle(series(4)) }] }, options: opts });
+  } else $('#cSubs').closest('.card').hidden = true;
+}
+
 // ---------- Portefølje ----------
 // Beholdninger med antal og købspris. Kurser hentes fra Alpha Vantage (gemmes 12 timer) eller tastes ind.
 
@@ -1504,6 +1587,20 @@ function viewSettings(el) {
         </div>
 
         <div class="card">
+          <h3>Alarmer & notifikationer</h3>
+          <p class="hint">Alarm når husleje eller anden fast indtægt mangler, en regning ikke er trukket, eller et abonnement er nyt eller dyrere. Dashboardet skal køre for at sende dem.</p>
+          <div class="form-row">
+            <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="nMac" ${st.notify?.mac ? 'checked' : ''} ${st.notify?.canMac ? '' : 'disabled'}> Notifikation på Mac'en</label>
+            ${st.notify?.canMac ? '<button class="btn small" data-ntest="mac">Send test</button>' : ''}
+          </div>
+          <div class="form-row" style="margin-top:8px">
+            <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" id="nMail" ${st.notify?.email ? 'checked' : ''} ${st.notify?.emailConfigured ? '' : 'disabled'}> Mail</label>
+            ${st.notify?.emailConfigured ? '<button class="btn small" data-ntest="email">Send testmail</button>' : ''}
+          </div>
+          ${st.notify?.emailConfigured ? '' : '<p class="hint" style="margin:8px 0 0">Mail kræver, at du sætter <code>SMTP_HOST</code>, <code>SMTP_USER</code>, <code>SMTP_PASS</code> og <code>ALERT_EMAIL_TO</code> i <code>.env</code> og genstarter – se README. Med Gmail bruger du en app-adgangskode, ikke din normale adgangskode.</p>'}
+        </div>
+
+        <div class="card">
           <h3>Kurser til porteføljen</h3>
           <p>${st.hasPriceKey ? '<span class="pos">✓ Alpha Vantage-nøgle fundet.</span>' : '<span class="neg">Ingen nøgle.</span> Hent en gratis på <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">alphavantage.co</a> og sæt den i <code>.env</code> som <code>ALPHAVANTAGE_API_KEY</code>.'}</p>
           <p class="hint">Gratisnøglen giver 25 opslag i døgnet. Hentede kurser gemmes lokalt i 12 timer, og kurser, du selv skriver, kræver ingen nøgle.</p>
@@ -1516,6 +1613,16 @@ function viewSettings(el) {
         </div>
       </div>
     </div>`;
+
+  // Notifikationer
+  const saveNotify = () => api('PUT', '/api/settings/notify', { mac: $('#nMac').checked, email: $('#nMail').checked }).then(refresh);
+  $('#nMac').onchange = saveNotify;
+  $('#nMail').onchange = saveNotify;
+  $$('[data-ntest]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api('POST', '/api/alerts/test', { channel: b.dataset.ntest }); toast(b.dataset.ntest === 'email' ? 'Testmail sendt' : 'Notifikation sendt'); } catch (err) { toast(esc(err.message)); }
+    b.disabled = false;
+  }));
 
   // Bank
   if (e.configured && $('#ebBank')) {

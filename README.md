@@ -65,6 +65,23 @@ Below the spending chart on the front page there is a short summary of the month
 purchases abroad and the biggest purchase – in a slightly teasing tone. Click a category in the chart to see a summary of just that category.
 The summary is written by the app itself from your transactions – no AI, no API key and nothing leaves your computer.
 
+## Subscriptions & alerts
+
+**Abonnementer** (subscriptions) lists everything that is charged regularly: streaming, apps, fitness, memberships,
+mobile, internet, utilities and insurance – with the price per month and per year. A charge becomes a subscription when
+the same recipient has taken roughly the same amount at a fixed interval. New subscriptions and price increases are
+highlighted, and subscriptions that have stopped are listed separately, so you can check that a cancellation went through.
+
+You get an **alert** on the front page when:
+
+- rent or another fixed income (from **Faste poster**) has not arrived a few days after it usually does,
+- a bill has not been charged when it usually is,
+- a new subscription shows up or one gets more expensive.
+
+Alerts are also sent as a **Mac notification** and, optionally, by **email**. Turn them on and off and send a test under
+**Indstillinger**. Email needs your own mail account in `.env` (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`,
+`ALERT_EMAIL_TO`) – for Gmail use `smtp.gmail.com`, port 465 and an app password. The dashboard has to be running to send alerts.
+
 ## Home & mortgage
 
 Under **Formue** (net worth) you add your home, and under **Bolig & lån** (home & mortgage) you enter your mortgage:
@@ -95,6 +112,8 @@ The portfolio value is included in your net worth under **Formue**.
 | `lib/csv.js` | Bank CSV import |
 | `lib/categorize.js` | Categories, rules and detection of recurring items |
 | `lib/prices.js` | Prices and exchange rates from Alpha Vantage |
+| `lib/alerts.js` | Subscription detection and alerts |
+| `lib/notify.js` | Mac notifications and email (small built-in SMTP client) |
 | `lib/demo.js` | Fictional demo data |
 | `public/` | User interface |
 

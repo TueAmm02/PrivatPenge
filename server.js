@@ -11,6 +11,8 @@ const { CATEGORIES, INTERNAL, PASSTHROUGH, REFUND, categorize, merchantKey, dete
 const { parseBankCsv } = require('./lib/csv');
 const eb = require('./lib/enablebanking');
 const prices = require('./lib/prices');
+const { subscriptions, computeAlerts } = require('./lib/alerts');
+const notify = require('./lib/notify');
 const demo = require('./lib/demo');
 
 
@@ -184,6 +186,8 @@ route('GET', '/api/state', (req, db) => ({
   holdings: db.holdings.map(holdingView),
   portfolioHistory: db.portfolioHistory,
   pricesUpdated: db.pricesUpdated || null,
+  alerts: computeAlerts(db),
+  notify: { ...notifySettings(db), canMac: notify.canMac(), emailConfigured: !!notify.mailConfig() },
   hasPriceKey: !!process.env.ALPHAVANTAGE_API_KEY,
   eb: ebStatus(db),
   hasDemo: db.transactions.some((t) => t.source === 'demo'),
@@ -269,6 +273,56 @@ route('DELETE', '/api/accounts/:id', (req, db, p) => {
   db.accounts = db.accounts.filter((a) => a.id !== p.id);
   db.transactions = db.transactions.filter((t) => t.accountId !== p.id);
   store.save();
+  return { ok: true };
+});
+
+// ---------- Abonnementer og alarmer ----------
+const notifySettings = (db) => ({ mac: true, email: true, ...(db.settings?.notify || {}) });
+
+// Sender notifikation om alarmer, der ikke er sendt før. Kører ved start, hver time og efter bank-sync.
+async function checkAlerts(db) {
+  const state = (db.alertState = db.alertState || {});
+  const fresh = computeAlerts(db).filter((a) => !state[a.key]);
+  if (!fresh.length) return;
+  const res = await notify.notifyAlerts(fresh, notifySettings(db));
+  for (const a of fresh) state[a.key] = { notifiedAt: new Date().toISOString(), via: [res.mac && 'mac', res.email && 'mail'].filter(Boolean) };
+  // Ryd op i gamle alarmer (ældre end et år)
+  for (const [k, v] of Object.entries(state)) if (Date.now() - Date.parse(v.notifiedAt || v.dismissedAt || 0) > 400 * 86400000) delete state[k];
+  store.save();
+  if (res.errors?.length) console.error('Notifikation:', res.errors.join('; '));
+}
+
+route('GET', '/api/subscriptions', (req, db) => subscriptions(db));
+route('POST', '/api/subscriptions/hide', async (req, db) => {
+  const { key, hidden } = await readBody(req);
+  db.hiddenSubs = (db.hiddenSubs || []).filter((k) => k !== key);
+  if (hidden) db.hiddenSubs.push(key);
+  store.save();
+  return { ok: true };
+});
+route('POST', '/api/alerts/dismiss', async (req, db) => {
+  const { key } = await readBody(req);
+  db.alertState = db.alertState || {};
+  db.alertState[key] = { ...(db.alertState[key] || {}), dismissed: true, dismissedAt: new Date().toISOString() };
+  store.save();
+  return { ok: true };
+});
+route('PUT', '/api/settings/notify', async (req, db) => {
+  const b = await readBody(req);
+  db.settings = db.settings || {};
+  db.settings.notify = { mac: b.mac !== false, email: b.email !== false };
+  store.save();
+  return db.settings.notify;
+});
+route('POST', '/api/alerts/test', async (req) => {
+  const { channel } = await readBody(req);
+  const title = 'Testnotifikation';
+  const message = 'Sådan ser en alarm fra dit økonomi-dashboard ud.';
+  if (channel === 'email') await notify.sendMail({ subject: 'Test fra Min økonomi', text: `${message}
+
+Alarmer sendes hertil, når fx husleje mangler eller en regning ikke er trukket.
+` });
+  else await notify.macNotify(title, message);
   return { ok: true };
 });
 
@@ -577,6 +631,8 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`Økonomi-dashboard kører på http://localhost:${PORT}`);
   migrateRefunds(store.load());
   autoSync();
+  setTimeout(() => checkAlerts(store.load()).catch((e) => console.error('Alarmer:', e.message)), 5000);
+  setInterval(() => checkAlerts(store.load()).catch((e) => console.error('Alarmer:', e.message)), 3600 * 1000);
   // PSD2 tillader ca. 4 automatiske hentninger i døgnet uden at du er til stede
   setInterval(autoSync, 6 * 3600 * 1000);
 });
@@ -591,6 +647,6 @@ function autoSync() {
   // Bankerne tillader kun få hentninger i døgnet uden at du er til stede – spring over hvis nyligt hentet
   if (db.eb.lastSync && Date.now() - Date.parse(db.eb.lastSync) < 5.5 * 3600 * 1000) return;
   ebSync(db)
-    .then((n) => console.log(`Bank synkroniseret: ${n} nye posteringer`))
+    .then((n) => { console.log(`Bank synkroniseret: ${n} nye posteringer`); return checkAlerts(db); })
     .catch((e) => { db.eb.lastError = e.message; store.save(); console.error('Bank-sync fejlede:', e.message); });
 }

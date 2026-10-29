@@ -55,8 +55,8 @@ main { padding: 28px 32px 60px; max-width: 1280px; width: 100%; }
 .grid { display: grid; gap: 16px; }
 .kpis { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 16px; }
 .cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.cols-3-2 { grid-template-columns: 3fr 2fr; }
-@media (max-width: 1000px) { .cols-2, .cols-3-2 { grid-template-columns: 1fr; } }
+.cols-3-2 { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+@media (max-width: 1000px) { .cols-2, .cols-3-2 { grid-template-columns: minmax(0, 1fr); } }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; min-width: 0; }
 .card h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
@@ -179,3 +179,12 @@ ul.bars .bar div { height: 100%; background: var(--text-2); opacity: .45; border
 .donut-legend li.active { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
 .summary .sum-text { margin: 0; line-height: 1.6; max-width: 75ch; }
 .summary { border-top: 1px solid var(--grid); margin-top: 14px; padding-top: 14px; }
+.alerts { display: grid; gap: 8px; margin-bottom: 16px; }
+.alert { display: flex; gap: 12px; align-items: flex-start; background: var(--warn-bg); color: var(--warn-ink); border-radius: var(--radius); padding: 12px 14px; }
+.alert .ai { font-size: 18px; line-height: 1.2; }
+.alert .at { flex: 1; min-width: 0; }
+.alert .at div { opacity: 0.9; margin-top: 2px; }
+.alert .btn { color: inherit; }
+.pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+table.subs td.text { white-space: normal; max-width: none; }
+table.subs td.num { white-space: nowrap; vertical-align: top; }
