@@ -175,3 +175,7 @@ ul.bars .bar { height: 8px; background: var(--surface-2); border-radius: 4px; ma
 ul.bars .bar div { height: 100%; background: var(--text-2); opacity: .45; border-radius: 4px; }
 .row.total { border-top: 1px solid var(--grid); padding-top: 10px; font-weight: 600; }
 .donut-legend li.refund { color: var(--text-2); }
+.donut-legend li[data-i] { cursor: pointer; }
+.donut-legend li.active { background: var(--surface-2); box-shadow: inset 3px 0 0 var(--accent); }
+.summary .sum-text { margin: 0; line-height: 1.6; max-width: 75ch; }
+.summary { border-top: 1px solid var(--grid); margin-top: 14px; padding-top: 14px; }

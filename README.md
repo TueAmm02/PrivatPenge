@@ -59,6 +59,12 @@ are fetched automatically every 6 hours.
 
 **Nordnet** has no public API for private customers. Enter the value of your account under **Formue** (net worth).
 
+## Monthly summary
+
+Below the spending chart on the front page there is a short summary of the month: where you ate, where you shopped,
+purchases abroad and the biggest purchase. Click a category in the chart to see a summary of just that category.
+The summary is written by the app itself from your transactions – no AI, no API key and nothing leaves your computer.
+
 ## Home & mortgage
 
 Under **Formue** (net worth) you add your home, and under **Bolig & lån** (home & mortgage) you enter your mortgage:

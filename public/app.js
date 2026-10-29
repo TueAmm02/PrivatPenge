@@ -8,6 +8,7 @@ const S = {
   charts: {},
   txFilter: { q: '', month: '', category: '', account: '', limit: 150 },
   editing: null,
+  sumCat: null,   // valgt kategori i månedens referat (null = hele måneden)
   bt: { holdings: [], name: 'Min portefølje', id: null, compare: new Set(), years: '10', initial: 100000, monthly: 2000, extra: [], rebalance: 'yearly', benchmark: 'VT', result: null },
 };
 
@@ -277,6 +278,135 @@ function prettyText(text) {
   return s.length > 34 ? s.slice(0, 32) + '…' : s || 'Indbetaling';
 }
 
+// ---------- Månedens referat ----------
+// Referatet bygges af posteringerne her i browseren – ingen AI eller eksterne kald.
+
+const CUR_COUNTRY = { SEK: 'Sverige', NOK: 'Norge', EUR: 'euroland', USD: 'USA', GBP: 'Storbritannien', CHF: 'Schweiz', PLN: 'Polen', CZK: 'Tjekkiet', HUF: 'Ungarn', ISK: 'Island', JPY: 'Japan', THB: 'Thailand' };
+const titleCase = (x) => (x && x === x.toUpperCase() ? x.toLowerCase().replace(/(^|[\s/&.-])(\p{L})/gu, (_, a, b) => a + b.toUpperCase()) : x);
+
+// Butiksnavn, sted og evt. udenlandsk valuta ud fra en rå posteringstekst
+function merchantInfo(text) {
+  let s = String(text || '');
+  const fx = s.match(/omregnet fra -?[\d.,]+ ([A-Z]{3})/i);
+  s = s.replace(/\s*beløb omregnet fra.*$/i, '').replace(/\s+notanr.*$/i, '')
+    .replace(/^(mobilepay|mob\.pay\*?|visa\/dankort|dankort-nota)\s*/i, '').replace(/^(udenlandsk )?overførsel til\s+/i, '');
+  let place = '';
+  if (s.includes('\\')) {
+    const parts = s.split('\\').map((x) => x.trim()).filter(Boolean);
+    s = parts[0];
+    if (parts.length > 2) place = parts[parts.length - 1];
+  }
+  const comma = s.match(/^(.*?),\s*([^,]+)$/);
+  if (comma) { s = comma[1]; place = place || comma[2]; }
+  s = s.replace(/\*+\d*\*?/g, ' ').replace(/\d{6,}/g, ' ').replace(/\s+\d{1,2}\.\d{2}$/, '')
+    .replace(/\s+[A-Z]{0,3}\d[\d\s]*$/, '').replace(/\s+/g, ' ').replace(/[\s,.:;–-]+$/, '').trim();
+  return { name: titleCase(s) || 'Ukendt', place: titleCase(place.replace(/\d+/g, '').trim()), currency: fx ? fx[1].toUpperCase() : null };
+}
+
+const andList = (xs) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} og ${xs[xs.length - 1]}`);
+const times = (n) => `${n} ${n === 1 ? 'gang' : 'gange'}`;
+
+// Forbrugsposteringer i en måned, evt. kun én kategori ("Øvrigt" = kategorier uden egen farve)
+function spendTxs(m, cat) {
+  return S.txs.filter((t) => t.month === m && t.amount < 0 && !NEUTRAL.has(t.category) && t.category !== SAVINGS && t.category !== REFUND
+    && (!cat || (cat === 'Øvrigt' ? !(t.category in CAT_COLOR) : t.category === cat)));
+}
+
+function byMerchant(txs) {
+  const g = {};
+  for (const t of txs) {
+    const info = merchantInfo(t.text);
+    const k = info.name.toLowerCase();
+    g[k] = g[k] || { name: info.name, n: 0, sum: 0 };
+    g[k].n++;
+    g[k].sum -= t.amount;
+  }
+  return Object.values(g).sort((a, b) => b.sum - a.sum);
+}
+
+// Køb i udenlandsk valuta grupperet pr. land med de steder, der står i teksten
+function abroad(txs) {
+  const g = {};
+  for (const t of txs) {
+    const info = merchantInfo(t.text);
+    if (!info.currency || info.currency === 'DKK') continue;
+    const c = CUR_COUNTRY[info.currency] || info.currency;
+    g[c] = g[c] || { country: c, currency: info.currency, sum: 0, places: new Set() };
+    g[c].sum -= t.amount;
+    if (info.place) g[c].places.add(info.place);
+  }
+  return Object.values(g).sort((a, b) => b.sum - a.sum);
+}
+
+const CAT_PHRASE = {
+  'Restaurant & café': (n) => `Du spiste eller drak ude ${times(n)}`,
+  'Dagligvarer': (n) => `Du handlede dagligvarer ${times(n)}`,
+  'Shopping': (n) => `Du købte ind ${times(n)}`,
+  'Transport': (n) => `Du betalte for transport ${times(n)}`,
+  'Rejser': (n) => `Du havde ${n} rejseudgifter`,
+  'Fritid': (n) => `Du brugte penge på fritid ${times(n)}`,
+};
+
+function localSummary(m, cat, st, avg) {
+  const txs = spendTxs(m, cat);
+  if (!txs.length) return ['Ingen forbrug i perioden.'];
+  const lines = [];
+  const out = { push: (x) => lines.push(x.replace(/kr\.\.$/, 'kr.')) };
+  const top = (xs, k = 3) => andList(xs.slice(0, k).map((x) => `${x.name} (${x.n > 1 ? times(x.n) + ', ' : ''}${kr(x.sum)})`));
+  const biggest = [...txs].sort((a, b) => a.amount - b.amount)[0];
+  const trips = abroad(txs);
+  const tripText = trips.length ? `Du handlede i ${andList(trips.map((t) => `${t.country}${t.places.size ? ` (${andList([...t.places].slice(0, 4))})` : ''}`))} for i alt ${kr(sum(trips, (t) => t.sum))}.` : '';
+
+  if (cat) {
+    const total = -sum(txs, (t) => t.amount);
+    const phrase = CAT_PHRASE[cat] ? CAT_PHRASE[cat](txs.length) : `${txs.length} ${txs.length === 1 ? 'postering' : 'posteringer'}`;
+    out.push(`${phrase} for i alt ${kr(total)}.`);
+    const g = byMerchant(txs);
+    if (g.length > 1) out.push(`Mest hos ${top(g)}.`);
+    else if (txs.length > 1) out.push(`Alle hos ${g[0].name}.`);
+    if (txs.length > 1) out.push(`Største enkeltbeløb var ${merchantInfo(biggest.text).name} den ${dateShort(biggest.date)} på ${kr(-biggest.amount)}.`);
+    if (cat === 'Øvrigt') {
+      const cats = Object.entries(txs.reduce((a, t) => ((a[t.category] = (a[t.category] || 0) - t.amount), a), {})).sort((a, b) => b[1] - a[1]);
+      out.push(`Fordelt på ${andList(cats.slice(0, 4).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
+    }
+    if (tripText) out.push(tripText);
+    const prev = avg && (cat === 'Øvrigt' ? sum(Object.entries(avg.byCat).filter(([c]) => !(c in CAT_COLOR)), ([, v]) => v) : avg.byCat[cat]);
+    if (prev > 0 && Math.abs(total - prev) >= 50) out.push(`Det er ${kr(Math.abs(total - prev))} ${total > prev ? 'mere' : 'mindre'} end dit gennemsnit for de foregående ${avg.n} måneder.`);
+    return lines;
+  }
+
+  out.push(`I ${monthLabel(m)} brugte du ${kr(st.spend)}${st.refunds > 0 ? `, efter at du fik ${kr(st.refunds)} tilbage via MobilePay og udlæg` : ''}.`);
+  const cats = Object.entries(st.byCat).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  if (cats.length) out.push(`Mest gik til ${andList(cats.slice(0, 2).map(([c, v]) => `${c.toLowerCase()} (${kr(v)})`))}.`);
+  const part = (c) => byMerchant(txs.filter((t) => t.category === c));
+  const eat = part('Restaurant & café');
+  if (eat.length) out.push(`Du spiste eller drak ude ${times(sum(eat, (x) => x.n))} for ${kr(sum(eat, (x) => x.sum))}, oftest hos ${andList([...eat].sort((a, b) => b.n - a.n).slice(0, 2).map((x) => x.name))}.`);
+  const food = part('Dagligvarer');
+  if (food.length) out.push(`Dagligvarer købte du mest hos ${andList(food.slice(0, 2).map((x) => x.name))}.`);
+  if (tripText) out.push(tripText);
+  const travel = part('Rejser');
+  if (travel.length) out.push(`Rejseudgifter: ${top(travel)}.`);
+  const shop = part('Shopping');
+  if (shop.length) out.push(`Du købte ind hos ${andList(shop.slice(0, 3).map((x) => x.name))}.`);
+  const fixedKeys = new Set(S.state.fixed.map((f) => f.key));
+  const big = txs.filter((t) => !fixedKeys.has(t.key) && t.category !== 'Bolig').sort((a, b) => a.amount - b.amount)[0];
+  if (big && -big.amount >= 500) out.push(`Største enkeltkøb var ${merchantInfo(big.text).name} (${big.category.toLowerCase()}) på ${kr(-big.amount)}.`);
+  return lines;
+}
+
+let selectSummary = () => {};
+
+function renderSummary(m, st, avg) {
+  const el = $('#summary');
+  if (!el) return;
+  const cat = S.sumCat;
+  el.innerHTML = `
+    <h3>${cat ? esc(cat) : 'Månedens referat'}</h3>
+    <p class="hint">${cat ? `${monthLabel(m)} · <a href="#" id="sumAll">vis hele måneden</a>` : 'Tryk på en kategori i diagrammet for at se den nærmere'}</p>
+    <p class="sum-text">${localSummary(m, cat, st, avg).map(esc).join(' ')}</p>`;
+  if ($('#sumAll')) $('#sumAll').onclick = (e) => { e.preventDefault(); selectSummary(null); };
+}
+
 function viewOverview(el) {
   if (!S.txs.length) return noDataView(el, 'Oversigt');
   const months = availableMonths();
@@ -334,6 +464,7 @@ function viewOverview(el) {
             <span class="num pos">−${kr(st.refunds)}</span><span></span><span></span>
           </li>` : ''}</ul>
         </div>` : '<p class="muted">Intet forbrug registreret i måneden.</p>'}
+        <div class="summary" id="summary"></div>
       </div>
       <div class="card">
         <h3>Indkomst</h3>
@@ -353,7 +484,13 @@ function viewOverview(el) {
   $('#prevM').onclick = () => { S.month = months[months.indexOf(m) + 1]; render(); };
   $('#nextM').onclick = () => { S.month = months[months.indexOf(m) - 1]; render(); };
   $('#seeAll').onclick = () => { S.txFilter.month = m; };
+  if (S.sumCat && !slices.some((x) => x.name === S.sumCat)) S.sumCat = null;
+  const selectSummaryHere = (name) => { S.sumCat = S.sumCat === name ? null : name; markSelected(); renderSummary(m, st, avg); };
+  const markSelected = () => $$('.donut-legend li[data-i]').forEach((li) => li.classList.toggle('active', slices[li.dataset.i].name === S.sumCat));
+  selectSummary = selectSummaryHere;
+  renderSummary(m, st, avg);
   if (!slices.length) return;
+  markSelected();
 
   chart('cDonut', {
     type: 'doughnut',
@@ -362,6 +499,8 @@ function viewOverview(el) {
       responsive: true,
       maintainAspectRatio: false,
       cutout: '68%',
+      onClick: (e, els) => { if (els.length) selectSummary(slices[els[0].index].name); },
+      onHover: (e, els) => { e.native.target.style.cursor = els.length ? 'pointer' : 'default'; },
       plugins: {
         legend: { display: false },
         tooltip: {
@@ -376,6 +515,7 @@ function viewOverview(el) {
   $$('.donut-legend li[data-i]').forEach((li) => {
     li.onmouseenter = () => { ch.setActiveElements([{ datasetIndex: 0, index: Number(li.dataset.i) }]); ch.tooltip.setActiveElements([{ datasetIndex: 0, index: Number(li.dataset.i) }], { x: 0, y: 0 }); ch.update(); };
     li.onmouseleave = () => { ch.setActiveElements([]); ch.tooltip.setActiveElements([], { x: 0, y: 0 }); ch.update(); };
+    li.onclick = () => selectSummary(slices[li.dataset.i].name);
   });
 }
 
