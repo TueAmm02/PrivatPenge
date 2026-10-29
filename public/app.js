@@ -15,6 +15,10 @@ const INTERNAL = 'Intern overførsel';
 // Tæller hverken som indtægt eller forbrug
 const NEUTRAL = new Set([INTERNAL, 'Viderebetalt']);
 const SAVINGS = 'Opsparing & investering';
+// Penge tilbage for noget, man har lagt ud for (MobilePay fra venner, udlæg) – trækkes fra forbruget
+const REFUND = 'Tilbagebetalt';
+// Kun disse kategorier tæller som indkomst; andre indbetalinger er refusioner i den kategori
+const INCOME_CATS = new Set(['Løn', 'Lejeindtægt', 'Anden indkomst']);
 const ASSET_TYPES = {
   bolig: 'Bolig', depot: 'Aktier / depot', pension: 'Pension', kunst: 'Kunst & samlerobjekter',
   kontant: 'Kontant / opsparing', koretoj: 'Køretøj', krypto: 'Krypto', andet: 'Andet',
@@ -117,15 +121,32 @@ const lineStyle = (color, extra = {}) => ({ borderColor: color, backgroundColor:
 
 async function refresh() {
   [S.state, S.txs, S.recurring] = await Promise.all([api('GET', '/api/state'), api('GET', '/api/transactions'), api('GET', '/api/recurring')]);
+  assignMonths();
   const months = availableMonths();
   // Start på seneste måned med indtægt, så en halv indeværende måned ikke ligner et underskud
   const prevM = addMonths(new Date().toISOString().slice(0, 7), -1);
   if (!S.month || !months.includes(S.month)) S.month = months.includes(prevM) ? prevM : lastFullMonth() || new Date().toISOString().slice(0, 7);
 }
 
+// Hvilken måned en postering tæller i, så hver måned får én løn og én husleje pr. lejer:
+// - Løn, der lander de første dage i en måned (fx 1. april), hører til måneden før, hvis den måned ikke har løn fra samme afsender.
+// - Husleje fra en lejer (fast post) betales forud: kommer den den 25. eller senere, er det næste måneds husleje.
+function assignMonths() {
+  for (const t of S.txs) t.month = t.date.slice(0, 7);
+  const rentKeys = new Set(S.state.fixed.filter((f) => f.kind === 'income' && f.category === 'Lejeindtægt').map((f) => f.key));
+  for (const t of S.txs) if (t.amount > 0 && rentKeys.has(t.key) && Number(t.date.slice(8, 10)) >= 25) t.month = addMonths(t.month, 1);
+  const isPay = (t) => t.category === 'Løn' && t.amount > 0;
+  const pays = S.txs.filter(isPay).sort((a, b) => (a.date < b.date ? -1 : 1));
+  for (const t of pays) {
+    if (Number(t.date.slice(8, 10)) > 5) continue;
+    const prev = addMonths(t.month, -1);
+    if (!pays.some((x) => x !== t && x.key === t.key && x.month === prev)) t.month = prev;
+  }
+}
+
 // Seneste måned med indtægt – bruges som "seneste hele måned" i gennemsnit
 function lastFullMonth() {
-  return availableMonths().find((m) => S.txs.some((t) => t.amount > 0 && t.date.startsWith(m) && !NEUTRAL.has(t.category))) || availableMonths()[0];
+  return availableMonths().find((m) => S.txs.some((t) => t.amount > 0 && t.month === m && INCOME_CATS.has(t.category))) || availableMonths()[0];
 }
 
 function availableMonths() {
@@ -136,16 +157,19 @@ const accountName = (id) => S.state.accounts.find((a) => a.id === id)?.name || '
 
 // Opsummering af én måned
 function monthStats(m) {
-  const txs = S.txs.filter((t) => t.date.startsWith(m) && !NEUTRAL.has(t.category));
-  const income = sum(txs.filter((t) => t.amount > 0), (t) => t.amount);
+  const txs = S.txs.filter((t) => t.month === m && !NEUTRAL.has(t.category));
+  const isIncome = (t) => t.amount > 0 && INCOME_CATS.has(t.category);
+  const income = sum(txs.filter(isIncome), (t) => t.amount);
+  const refunds = sum(txs.filter((t) => t.amount > 0 && t.category === REFUND), (t) => t.amount);
   const savings = -sum(txs.filter((t) => t.amount < 0 && t.category === SAVINGS), (t) => t.amount);
-  const spendTx = txs.filter((t) => t.amount < 0 && t.category !== SAVINGS);
-  const spend = -sum(spendTx, (t) => t.amount);
+  // Indbetalinger i en forbrugskategori (fx en returvare i Netto) trækkes fra den kategori
+  const spendTx = txs.filter((t) => t.category !== SAVINGS && t.category !== REFUND && !isIncome(t));
+  const spend = -sum(spendTx, (t) => t.amount) - refunds;
   const fixedKeys = new Set(S.state.fixed.filter((f) => f.kind !== 'income').map((f) => f.key).filter(Boolean));
-  const fixedSpend = -sum(spendTx.filter((t) => fixedKeys.has(t.key)), (t) => t.amount);
+  const fixedSpend = -sum(spendTx.filter((t) => t.amount < 0 && fixedKeys.has(t.key)), (t) => t.amount);
   const byCat = {};
   for (const t of spendTx) byCat[t.category] = (byCat[t.category] || 0) - t.amount;
-  return { income, savings, spend, fixedSpend, variable: spend - fixedSpend, net: income - spend - savings, byCat, count: txs.length };
+  return { income, refunds, savings, spend, fixedSpend, variable: spend - fixedSpend, net: income - spend - savings, byCat, count: txs.length };
 }
 
 function avgStats(m, n = 3) {
@@ -235,13 +259,13 @@ function spendSlices(byCat) {
   return slices;
 }
 
-// Indtægter grupperet efter kilde; faste poster bruger deres eget navn (fx "Husleje – lejer")
+// Indtægter grupperet efter kilde; faste poster bruger deres eget navn (fx "Husleje – lejer"), øvrige MobilePay samles
 function incomeSources(m) {
   const fixedName = Object.fromEntries(S.state.fixed.map((f) => [f.key, f.name]));
   const groups = {};
   for (const t of S.txs) {
-    if (!t.date.startsWith(m) || t.amount <= 0 || NEUTRAL.has(t.category)) continue;
-    const name = fixedName[t.key] || prettyText(t.text);
+    if (t.month !== m || t.amount <= 0 || !INCOME_CATS.has(t.category)) continue;
+    const name = fixedName[t.key] || (/mobilepay|mobile pay/i.test(t.text) ? 'MobilePay' : prettyText(t.text));
     groups[name] = groups[name] || { name, value: 0, category: t.category };
     groups[name].value += t.amount;
   }
@@ -295,16 +319,20 @@ function viewOverview(el) {
     <div class="grid cols-3-2" style="margin-top:16px">
       <div class="card">
         <h3>Hvad gik pengene til?</h3>
-        <p class="hint">Forbrug i ${monthLabel(m)} fordelt på kategorier · overførsler mellem egne konti og opsparing tæller ikke med</p>
+        <p class="hint">Forbrug i ${monthLabel(m)} fordelt på kategorier · overførsler mellem egne konti og opsparing tæller ikke med${st.refunds > 0 ? ' · penge du har fået tilbage, er trukket fra' : ''}</p>
         ${slices.length ? `<div class="donut-wrap">
           <div class="donut"><canvas id="cDonut" role="img" aria-label="Forbrug fordelt på kategorier"></canvas>
             <div class="donut-center"><div class="muted">Forbrug</div><div class="v">${kr(st.spend)}</div></div>
           </div>
           <ul class="donut-legend">${slices.map((s, i) => `<li data-i="${i}">
             <i class="swatch" style="background:${s.color}"></i><span class="n">${esc(s.name)}</span>
-            <span class="num">${kr(s.value)}</span><span class="num muted p">${pct(s.value / st.spend, 0)}</span>
+            <span class="num">${kr(s.value)}</span><span class="num muted p">${pct(s.value / (st.spend + st.refunds), 0)}</span>
             ${avg && !s.other ? `<span class="num d ${(s.value - (avg.byCat[s.name] || 0)) > 0 ? 'neg' : 'pos'}" title="Forskel ift. gns. ${avg.n} mdr.">${(s.value - (avg.byCat[s.name] || 0)) > 0 ? '▲' : '▼'}</span>` : '<span></span>'}
-          </li>`).join('')}</ul>
+          </li>`).join('')}
+          ${st.refunds > 0 ? `<li class="refund" title="Indbetalinger via MobilePay og udlæg, fx når andre betaler deres del af noget, du har lagt ud for">
+            <i class="swatch" style="background:none;border:1.5px dashed var(--muted)"></i><span class="n">Fået tilbage (MobilePay, udlæg)</span>
+            <span class="num pos">−${kr(st.refunds)}</span><span></span><span></span>
+          </li>` : ''}</ul>
         </div>` : '<p class="muted">Intet forbrug registreret i måneden.</p>'}
       </div>
       <div class="card">
@@ -338,14 +366,14 @@ function viewOverview(el) {
         legend: { display: false },
         tooltip: {
           backgroundColor: css('--surface'), titleColor: css('--text'), bodyColor: css('--text-2'), borderColor: css('--border'), borderWidth: 1, padding: 10, usePointStyle: true,
-          callbacks: { label: (c) => ` ${kr(c.parsed)} (${pct(c.parsed / st.spend, 0)})` },
+          callbacks: { label: (c) => ` ${kr(c.parsed)} (${pct(c.parsed / (st.spend + st.refunds), 0)})` },
         },
       },
     },
   });
   // Hover i forklaringen fremhæver udsnittet
   const ch = S.charts.cDonut;
-  $$('.donut-legend li').forEach((li) => {
+  $$('.donut-legend li[data-i]').forEach((li) => {
     li.onmouseenter = () => { ch.setActiveElements([{ datasetIndex: 0, index: Number(li.dataset.i) }]); ch.tooltip.setActiveElements([{ datasetIndex: 0, index: Number(li.dataset.i) }], { x: 0, y: 0 }); ch.update(); };
     li.onmouseleave = () => { ch.setActiveElements([]); ch.tooltip.setActiveElements([], { x: 0, y: 0 }); ch.update(); };
   });
@@ -383,7 +411,7 @@ function txTable(txs, showAccount = true) {
     <thead><tr><th>Dato</th><th>Tekst</th><th>Kategori</th>${showAccount ? '<th>Konto</th>' : ''}<th class="num">Beløb</th></tr></thead>
     <tbody>${txs.map((t) => `<tr>
       <td class="muted" style="white-space:nowrap">${dateLabel(t.date)}</td>
-      <td class="text" title="${esc(t.text)}">${esc(t.text)}${t.pending ? ' <span class="pill">afventer</span>' : ''}</td>
+      <td class="text" title="${esc(t.text)}">${esc(t.text)}${t.pending ? ' <span class="pill">afventer</span>' : ''}${t.month && t.month !== t.date.slice(0, 7) ? ` <span class="pill" title="Tælles med i den måned, betalingen hører til (løn bagud, husleje forud)">tæller i ${monthLabel(t.month)}</span>` : ''}</td>
       <td><select class="cat" data-tx="${t.id}">${cats.map((c) => `<option ${c === t.category ? 'selected' : ''}>${c}</option>`).join('')}</select></td>
       ${showAccount ? `<td class="muted">${esc(accountName(t.accountId))}</td>` : ''}
       <td class="num ${t.amount > 0 ? 'pos' : ''}">${t.amount > 0 ? '+' : ''}${fmt(t.amount, 2)}</td>
@@ -415,7 +443,7 @@ function viewTransactions(el) {
   const months = availableMonths();
   const q = f.q.toLowerCase();
   const list = S.txs.filter((t) =>
-    (!f.month || t.date.startsWith(f.month)) &&
+    (!f.month || t.month === f.month) &&
     (!f.category || t.category === f.category) &&
     (!f.account || t.accountId === f.account) &&
     (!q || t.text.toLowerCase().includes(q) || String(t.amount).includes(q)));

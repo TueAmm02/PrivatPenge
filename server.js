@@ -7,7 +7,7 @@ const crypto = require('crypto');
 
 loadEnv();
 const store = require('./lib/store');
-const { CATEGORIES, INTERNAL, PASSTHROUGH, categorize, merchantKey, detectRecurring } = require('./lib/categorize');
+const { CATEGORIES, INTERNAL, PASSTHROUGH, REFUND, categorize, merchantKey, detectRecurring } = require('./lib/categorize');
 const { parseBankCsv, parseAmount, parseDate } = require('./lib/csv');
 const eb = require('./lib/enablebanking');
 const backtest = require('./lib/backtest');
@@ -491,9 +491,21 @@ const server = http.createServer(async (req, res) => {
   });
 });
 
+// Flytter ældre indbetalinger, som nu genkendes som tilbagebetalinger (MobilePay, udlæg), til den nye kategori.
+// Manuelt kategoriserede og interne overførsler røres ikke.
+function migrateRefunds(db) {
+  let n = 0;
+  for (const t of db.transactions) {
+    if (t.manual || t.amount <= 0 || t.category === REFUND || t.category === INTERNAL || t.category === PASSTHROUGH) continue;
+    if (categorize(t.text, t.amount, db.rules, t.date) === REFUND) { t.category = REFUND; n++; }
+  }
+  if (n) { store.save(); console.log(`${n} indbetalinger flyttet til "${REFUND}"`); }
+}
+
 // Kun tilgængelig fra denne maskine
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`Økonomi-dashboard kører på http://localhost:${PORT}`);
+  migrateRefunds(store.load());
   autoSync();
   // PSD2 tillader ca. 4 automatiske hentninger i døgnet uden at du er til stede
   setInterval(autoSync, 6 * 3600 * 1000);

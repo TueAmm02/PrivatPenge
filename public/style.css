@@ -174,3 +174,4 @@ ul.bars .row span:first-child { overflow: hidden; text-overflow: ellipsis; white
 ul.bars .bar { height: 8px; background: var(--surface-2); border-radius: 4px; margin-top: 5px; overflow: hidden; }
 ul.bars .bar div { height: 100%; background: var(--text-2); opacity: .45; border-radius: 4px; }
 .row.total { border-top: 1px solid var(--grid); padding-top: 10px; font-weight: 600; }
+.donut-legend li.refund { color: var(--text-2); }
