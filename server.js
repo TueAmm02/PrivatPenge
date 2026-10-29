@@ -8,12 +8,11 @@ const crypto = require('crypto');
 loadEnv();
 const store = require('./lib/store');
 const { CATEGORIES, INTERNAL, PASSTHROUGH, REFUND, categorize, merchantKey, detectRecurring } = require('./lib/categorize');
-const { parseBankCsv, parseAmount, parseDate } = require('./lib/csv');
+const { parseBankCsv } = require('./lib/csv');
 const eb = require('./lib/enablebanking');
-const backtest = require('./lib/backtest');
+const prices = require('./lib/prices');
 const demo = require('./lib/demo');
 
-backtest.setCustomSource(() => store.load().customSeries);
 
 const PORT = Number(process.env.PORT || 5180);
 const PUBLIC = path.join(__dirname, 'public');
@@ -182,8 +181,9 @@ route('GET', '/api/state', (req, db) => ({
   rules: db.rules,
   fixed: db.fixed,
   assets: db.assets,
-  portfolios: db.portfolios,
-  customSeries: db.customSeries.map(({ series, ...c }) => ({ ...c, months: Object.keys(series).length, from: Object.keys(series).sort()[0] })),
+  holdings: db.holdings.map(holdingView),
+  portfolioHistory: db.portfolioHistory,
+  pricesUpdated: db.pricesUpdated || null,
   hasPriceKey: !!process.env.ALPHAVANTAGE_API_KEY,
   eb: ebStatus(db),
   hasDemo: db.transactions.some((t) => t.source === 'demo'),
@@ -350,34 +350,104 @@ function pickLoan(l) {
   };
 }
 
-crud('portfolios', ['name', 'holdings']);
+// ---------- Portefølje ----------
+// Beholdninger med antal og evt. købspris. Kursen hentes fra Alpha Vantage – eller man taster den selv,
+// fx for danske investeringsforeninger, som Alpha Vantage ikke kender.
+const numOrNull = (x) => (x === '' || x == null || isNaN(Number(x)) ? null : Number(x));
+const fxCurrency = (c) => (c === 'GBX' ? 'GBP' : c); // London-kurser er i pence
 
-route('GET', '/api/search', async (req) => {
-  const q = new URL(req.url, 'http://x').searchParams.get('q') || '';
-  return q.length < 2 ? [] : backtest.search(q);
-});
-// Egen kursserie fra CSV (dato;kurs) – fx en dansk investeringsforening eller boligindeks
-route('POST', '/api/series', async (req, db) => {
-  const b = await readBody(req);
-  const series = {};
-  for (const line of String(b.text || '').split(/\r?\n/)) {
-    const cells = line.split(/[;\t,](?=(?:[^"]*"[^"]*")*[^"]*$)/).map((c) => c.replace(/"/g, '').trim());
-    const date = cells.map(parseDate).find(Boolean);
-    const nums = cells.map(parseAmount).filter((x) => !isNaN(x) && x > 0);
-    if (date && nums.length) series[date.slice(0, 7)] = nums[nums.length - 1];
+function pickHolding(b, old = {}) {
+  const get = (k) => (b[k] !== undefined ? b[k] : old[k]);
+  const ticker = String(get('ticker') || '').trim().toUpperCase();
+  return {
+    name: String(get('name') || '').trim() || ticker || 'Beholdning',
+    ticker,
+    quantity: numOrNull(get('quantity')) ?? 0,
+    cost: numOrNull(get('cost')),               // købt for i alt (kr.)
+    currency: String(get('currency') || (ticker ? prices.guessCurrency(ticker) : 'DKK')).toUpperCase(),
+    account: String(get('account') || ''),
+    manualPrice: numOrNull(get('manualPrice')), // egen kurs i beholdningens valuta
+  };
+}
+
+function holdingView(h) {
+  const price = h.manualPrice ?? h.lastPrice ?? null;
+  const rate = h.currency === 'DKK' ? 1 : h.fx;
+  const value = price != null && rate ? h.quantity * price * (h.currency === 'GBX' ? 0.01 : 1) * rate : null;
+  return { ...h, price, priceSource: h.manualPrice != null ? 'manual' : h.lastPrice != null ? 'alphavantage' : null, value, gain: value != null && h.cost ? value - h.cost : null };
+}
+
+// Gemmer dagens samlede værdi, så udviklingen kan vises over tid (én måling pr. dag)
+function snapshotPortfolio(db) {
+  const views = db.holdings.map(holdingView).filter((h) => h.value != null);
+  const point = { date: today(), value: Math.round(sum(views, (h) => h.value)), cost: Math.round(sum(views, (h) => h.cost || 0)) };
+  db.portfolioHistory = db.portfolioHistory.filter((p) => p.date !== point.date);
+  if (db.holdings.length) db.portfolioHistory.push(point);
+  db.portfolioHistory.sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+const sum = (xs, f) => xs.reduce((a, x) => a + f(x), 0);
+
+async function refreshPrices(db, force = false) {
+  const errors = new Set();
+  let stop = false;
+  for (const h of db.holdings) {
+    if (stop || !h.ticker || h.manualPrice != null) continue;
+    try {
+      const q = await prices.quote(h.ticker, force);
+      Object.assign(h, { lastPrice: q.price, priceDate: q.date, changePct: q.changePct });
+    } catch (e) {
+      errors.add(e.code ? e.message : `${h.name}: ${e.message}`);
+      if (e.code) stop = true; // manglende nøgle eller opbrugt kvote – resten fejler også
+    }
   }
-  if (Object.keys(series).length < 13) throw new Error('Fandt under 13 måneders kurser. Forventet format pr. linje: dato;kurs');
-  const item = { id: store.id(), name: b.name || 'Egen serie', currency: b.currency || 'DKK', series };
-  db.customSeries.push(item);
+  for (const cur of new Set(db.holdings.map((h) => fxCurrency(h.currency)))) {
+    if (cur === 'DKK' || stop) continue;
+    try {
+      const rate = await prices.fxToDKK(cur, force);
+      for (const h of db.holdings) if (fxCurrency(h.currency) === cur) h.fx = rate;
+    } catch (e) {
+      errors.add(e.code ? e.message : `Valutakurs ${cur}: ${e.message}`);
+      if (e.code) stop = true;
+    }
+  }
+  db.pricesUpdated = new Date().toISOString();
+  snapshotPortfolio(db);
   store.save();
-  return { id: item.id, name: item.name, months: Object.keys(series).length };
+  return [...errors];
+}
+
+const holdingsResult = async (db) => ({ errors: await refreshPrices(db), holdings: db.holdings.map(holdingView) });
+
+route('POST', '/api/holdings', async (req, db) => {
+  const h = { id: store.id(), ...pickHolding(await readBody(req)) };
+  if (h.manualPrice != null) h.manualDate = today();
+  db.holdings.push(h);
+  return holdingsResult(db);
 });
-route('DELETE', '/api/series/:id', (req, db, p) => {
-  db.customSeries = db.customSeries.filter((x) => x.id !== p.id);
+route('PUT', '/api/holdings/:id', async (req, db, p) => {
+  const h = db.holdings.find((x) => x.id === p.id);
+  if (!h) throw Object.assign(new Error('Findes ikke'), { status: 404 });
+  const next = pickHolding(await readBody(req), h);
+  if (next.ticker !== h.ticker) Object.assign(h, { lastPrice: null, priceDate: null, changePct: null });
+  if (next.currency !== h.currency) h.fx = null;
+  if (next.manualPrice !== h.manualPrice) h.manualDate = next.manualPrice != null ? today() : null;
+  Object.assign(h, next);
+  return holdingsResult(db);
+});
+route('DELETE', '/api/holdings/:id', (req, db, p) => {
+  db.holdings = db.holdings.filter((x) => x.id !== p.id);
+  snapshotPortfolio(db);
   store.save();
   return { ok: true };
 });
-route('POST', '/api/backtest', async (req) => backtest.run(await readBody(req)));
+route('POST', '/api/holdings/refresh', async (req, db) => {
+  const b = await readBody(req);
+  return { errors: await refreshPrices(db, !!b.force), holdings: db.holdings.map(holdingView) };
+});
+route('GET', '/api/search', async (req) => {
+  const q = new URL(req.url, 'http://x').searchParams.get('q') || '';
+  return q.length < 2 ? [] : prices.search(q);
+});
 
 // Enable Banking
 route('GET', '/api/eb/status', (req, db) => ebStatus(db));
@@ -513,6 +583,10 @@ server.listen(PORT, '127.0.0.1', () => {
 
 function autoSync() {
   const db = store.load();
+  // Kurser højst to gange i døgnet (svarene gemmes i 12 timer), så porteføljens historik får én måling pr. dag
+  if (db.holdings.length && (!db.pricesUpdated || Date.now() - Date.parse(db.pricesUpdated) > 12 * 3600 * 1000)) {
+    refreshPrices(db).then((errs) => errs.length && console.error('Kurser:', errs.join('; '))).catch((e) => console.error('Kurser:', e.message));
+  }
   if (!db.eb?.sessionId || !eb.config().configured) return;
   // Bankerne tillader kun få hentninger i døgnet uden at du er til stede – spring over hvis nyligt hentet
   if (db.eb.lastSync && Date.now() - Date.parse(db.eb.lastSync) < 5.5 * 3600 * 1000) return;

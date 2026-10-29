@@ -1,7 +1,7 @@
 # PrivatPenge – local personal finance dashboard
 
 A personal finance dashboard that runs on your own computer. It gives you an overview of your accounts, salary, fixed
-expenses, spending, net worth (home, brokerage account, art etc.), mortgage, and lets you backtest investment portfolios.
+expenses, spending, net worth (home, brokerage account, art etc.), mortgage, and tracks your investment portfolio with up-to-date prices.
 
 The app is built for Danish users, so the interface is in Danish. Button and menu names below are given in Danish
 with an English explanation.
@@ -26,7 +26,7 @@ Open http://localhost:5180. On a Mac you can also double-click `Start dashboard.
 
 | Path | Contents |
 |---|---|
-| `data/db.json` | Transactions, fixed items, assets, loans and portfolios |
+| `data/db.json` | Transactions, fixed items, assets, loans and portfolio holdings |
 | `data/prices/` | Price data (cache) |
 | `keys/` | Your private key for Enable Banking |
 | `.env` | Your app ID and API key |
@@ -57,7 +57,7 @@ are fetched automatically every 6 hours.
 
 **Without a bank connection:** export your transactions as CSV from your online bank and drag the file into **Indstillinger** (Settings).
 
-**Nordnet** has no public API for private customers. Enter the value of your account under **Formue** (net worth).
+**Nordnet** has no public API for private customers. Enter your holdings under **Portefølje** (portfolio) instead.
 
 ## Monthly summary
 
@@ -73,15 +73,18 @@ figures in the loan overview from your mortgage lender. The tab shows the outsta
 fall due, the monthly economy of the home including rental income, and "what if" scenarios: extra repayment,
 starting repayments now, or a different interest rate. The tax deduction is calculated with a flat rate that you set yourself.
 
-## Portfolio test
+## Portfolio
 
-Price data comes from Alpha Vantage. Get a free key at https://www.alphavantage.co/support/#api-key
-and put it in `.env` as `ALPHAVANTAGE_API_KEY=`. The free key allows 25 lookups per day, and prices are cached locally for 3 days.
+Under **Portefølje** you enter what you own: name, quantity, what you paid in total, account (e.g. Aktiesparekonto)
+and currency. The page shows the current value, return, allocation per holding and per account, and the value over time.
+The portfolio value is included in your net worth under **Formue**.
 
-- All prices are converted to DKK using monthly exchange rates.
-- **Fixed return** (`FAST:3` = 3 % per year) is used for assets without a market price, such as a home or art.
-- **Custom price series** can be uploaded as CSV (`date;price`), e.g. for Danish investment funds.
-- Taxes and trading costs are not included. The example portfolios are textbook examples, not recommendations.
+- **Automatic prices:** give a holding a symbol from Alpha Vantage (e.g. `VT`, `VWCE.DEX`, `AAPL`) – the built-in search finds it.
+  Get a free key at https://www.alphavantage.co/support/#api-key and put it in `.env` as `ALPHAVANTAGE_API_KEY=`.
+  The free key allows 25 lookups per day, so prices and exchange rates are cached for 12 hours and refreshed automatically.
+- **Your own price:** Danish investment funds are rarely available at Alpha Vantage. Leave the symbol empty and type the price
+  yourself (no key needed) – update it whenever you like.
+- Foreign prices are converted to DKK with the latest exchange rate. One measurement per day is saved for the history chart.
 
 ## Files
 
@@ -91,7 +94,7 @@ and put it in `.env` as `ALPHAVANTAGE_API_KEY=`. The free key allows 25 lookups 
 | `lib/enablebanking.js` | PSD2 client (JWT/RS256) |
 | `lib/csv.js` | Bank CSV import |
 | `lib/categorize.js` | Categories, rules and detection of recurring items |
-| `lib/backtest.js` | Price data, currency conversion and backtest |
+| `lib/prices.js` | Prices and exchange rates from Alpha Vantage |
 | `lib/demo.js` | Fictional demo data |
 | `public/` | User interface |
 

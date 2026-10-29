@@ -9,7 +9,6 @@ const S = {
   txFilter: { q: '', month: '', category: '', account: '', limit: 150 },
   editing: null,
   sumCat: null,   // valgt kategori i månedens referat (null = hele måneden)
-  bt: { holdings: [], name: 'Min portefølje', id: null, compare: new Set(), years: '10', initial: 100000, monthly: 2000, extra: [], rebalance: 'yearly', benchmark: 'VT', result: null },
 };
 
 const INTERNAL = 'Intern overførsel';
@@ -183,7 +182,7 @@ function avgStats(m, n = 3) {
 }
 
 const bankTotal = () => sum(S.state.accounts, (a) => a.balance || 0);
-const assetsGross = () => sum(S.state.assets, (a) => a.value);
+const assetsGross = () => sum(S.state.assets, (a) => a.value) + portfolioValue();
 const assetsDebt = () => sum(S.state.assets, (a) => a.debt || 0);
 const netWorth = () => bankTotal() + assetsGross() - assetsDebt();
 
@@ -760,7 +759,7 @@ function viewWealth(el) {
       <label>Type<select id="aType">${Object.entries(ASSET_TYPES).map(([k, v]) => `<option value="${k}" ${k === a.type ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
       <label>Værdi (kr.)<input type="number" id="aVal" value="${a.value ?? ''}" style="width:130px"></label>
       <label>Gæld (kr.)<input type="number" id="aDebt" value="${a.debt || ''}" placeholder="fx realkredit" style="width:130px"></label>
-      <label title="Bruges i portefølje-testen som fast årligt afkast">Forventet afkast % p.a.<input type="number" step="0.1" id="aRet" value="${a.expectedReturn ?? ''}" style="width:90px"></label>
+      <label title="Forventet årlig værdistigning, fx til at fremskrive boligens værdi">Forventet stigning % p.a.<input type="number" step="0.1" id="aRet" value="${a.expectedReturn ?? ''}" style="width:90px"></label>
       <label>Pr. dato<input type="date" id="aDate" value="${new Date().toISOString().slice(0, 10)}"></label>
       <label style="flex:1;min-width:160px">Note<input type="text" id="aNote" value="${esc(a.note || '')}" placeholder="fx kilde til vurdering"></label>
     </div>`;
@@ -779,6 +778,7 @@ function viewWealth(el) {
           <h3>Aktiver</h3>
           <p class="hint">Opdatér værdien jævnligt (fx boligvurdering, depotværdi fra Nordnet) – hver opdatering gemmes, så udviklingen kan følges.</p>
           ${S.state.accounts.map((a) => `<div class="asset"><div><div class="name">${esc(a.name)}</div><div class="meta">Bankkonto${a.balanceDate ? ' · saldo pr. ' + dateLabel(a.balanceDate) : ''}</div></div><div class="num">${kr(a.balance || 0)}</div></div>`).join('')}
+          ${(S.state.holdings || []).length ? `<div class="asset"><div><div class="name">Portefølje <span class="pill">Depot</span></div><div class="meta">${S.state.holdings.length} beholdninger · følger kurserne automatisk</div></div><div style="text-align:right"><div class="num" style="font-weight:600">${kr(portfolioValue())}</div><a class="btn small ghost" href="#portefolje">Åbn</a></div></div>` : ''}
           ${assets.map((a) => ed === a.id ? `<div class="asset" style="display:block">${form(a)}<p style="margin:10px 0 0"><button class="btn primary" id="aSave">Gem</button> <button class="btn" id="aCancel">Annullér</button> <button class="btn ghost danger" id="aDel">Slet</button></p></div>` : `
             <div class="asset">
               <div><div class="name">${esc(a.name)} <span class="pill">${ASSET_TYPES[a.type] || a.type}</span></div>
@@ -813,6 +813,7 @@ function viewWealth(el) {
   const byType = {};
   if (bank) byType['Bank'] = bank;
   for (const a of assets) byType[ASSET_TYPES[a.type] || a.type] = (byType[ASSET_TYPES[a.type] || a.type] || 0) + a.value;
+  if (portfolioValue()) byType[ASSET_TYPES.depot || 'Depot'] = (byType[ASSET_TYPES.depot || 'Depot'] || 0) + portfolioValue();
   const types = Object.entries(byType).sort((a, b) => b[1] - a[1]);
   chart('cAlloc', {
     type: 'bar',
@@ -821,7 +822,8 @@ function viewWealth(el) {
   });
 
   // Nettoformue pr. måned: hvert aktiv tæller fra sin første registrering
-  const dates = assets.flatMap((a) => (a.history || []).map((h) => h.date.slice(0, 7)));
+  const phist = S.state.portfolioHistory || [];
+  const dates = [...assets.flatMap((a) => (a.history || []).map((h) => h.date.slice(0, 7))), ...phist.map((p) => p.date.slice(0, 7))];
   const first = dates.sort()[0];
   const nowM = new Date().toISOString().slice(0, 7);
   if (first && first < nowM) {
@@ -833,6 +835,8 @@ function viewWealth(el) {
         const h = (a.history || []).filter((x) => x.date.slice(0, 7) <= m).pop();
         if (h) v += h.value - (h.debt || 0);
       }
+      const p = phist.filter((x) => x.date.slice(0, 7) <= m).pop();
+      if (p) v += m === nowM ? portfolioValue() : p.value;
       return v;
     });
     chart('cNW', { type: 'line', data: { labels: months.map(shortMonth), datasets: [{ label: 'Nettoformue', data: vals, ...lineStyle(series(0)), stepped: false }] }, options: baseOptions() });
@@ -1192,7 +1196,7 @@ function viewHousing(el) {
       ${row('Heraf efter fradrag', (x) => kr(x.afterTax), 'afterTax')}
       ${row('Lånet er betalt ud', (x) => (x.paidOff ? dateLabel(x.paidOff) : '–'))}
     </tbody></table></div>
-    ${HS.scenario === 'extra' && HS.extraAmount > 0 ? `<p class="hint" style="margin-top:8px">Hver krone du afdrager, sparer dig for ca. <b>${fmt(effRate * (1 - FRADRAG_RATE) / ((HS.kurs || 100) / 100), 2)} %</b> om året i renter og bidrag efter fradrag – et sikkert "afkast", du kan sammenligne med andre muligheder i Portefølje-testen (som fast afkast). I alt sparer du ca. ${kr(a.afterTax - b.afterTax)} efter fradrag over lånets løbetid.</p>` : ''}
+    ${HS.scenario === 'extra' && HS.extraAmount > 0 ? `<p class="hint" style="margin-top:8px">Hver krone du afdrager, sparer dig for ca. <b>${fmt(effRate * (1 - FRADRAG_RATE) / ((HS.kurs || 100) / 100), 2)} %</b> om året i renter og bidrag efter fradrag – et sikkert "afkast", du kan sammenligne med andre investeringer. I alt sparer du ca. ${kr(a.afterTax - b.afterTax)} efter fradrag over lånets løbetid.</p>` : ''}
     <p class="hint">Bidragssatsen holdes uændret i hele perioden (i praksis falder den ofte, når belåningen falder). Ved omlægning er kurstab og gebyrer ikke medregnet.</p>`;
 }
 
@@ -1236,306 +1240,196 @@ function bindLoanForm(home) {
   if ($('#lCancel')) $('#lCancel').onclick = () => { HS.editLoan = false; render(); };
 }
 
-// ---------- Portefølje-test ----------
+// ---------- Portefølje ----------
+// Beholdninger med antal og købspris. Kurser hentes fra Alpha Vantage (gemmes 12 timer) eller tastes ind.
 
-const PRESETS = [
-  { name: '100 % globale aktier', holdings: [{ ticker: 'VT', name: 'Vanguard Total World Stock ETF', weight: 100 }] },
-  { name: 'Klassisk 60/40', holdings: [{ ticker: 'VT', name: 'Vanguard Total World Stock ETF', weight: 60 }, { ticker: 'BND', name: 'Vanguard Total Bond Market ETF', weight: 40 }] },
-  { name: 'Aktier, obligationer, ejendom, guld', holdings: [{ ticker: 'VT', name: 'Vanguard Total World Stock ETF', weight: 55 }, { ticker: 'BND', name: 'Vanguard Total Bond Market ETF', weight: 25 }, { ticker: 'VNQ', name: 'Vanguard Real Estate ETF', weight: 10 }, { ticker: 'GLD', name: 'SPDR Gold Shares', weight: 10 }] },
-  { name: 'Permanent portfolio-idé', holdings: [{ ticker: 'VTI', name: 'Vanguard Total Stock Market ETF', weight: 25 }, { ticker: 'TLT', name: 'iShares 20+ Year Treasury Bond ETF', weight: 25 }, { ticker: 'GLD', name: 'SPDR Gold Shares', weight: 25 }, { ticker: 'SHY', name: 'iShares 1-3 Year Treasury Bond ETF', weight: 25 }] },
-];
+const ACCOUNTS = ['Aktiesparekonto', 'Frit depot', 'Ratepension', 'Aldersopsparing', 'Livrente', 'Børneopsparing'];
+const CURRENCIES = ['DKK', 'USD', 'EUR', 'SEK', 'NOK', 'GBP', 'GBX', 'CHF', 'CAD'];
+const PT = { editing: null, refreshing: false, errors: [], results: [] };
+
+const portfolioValue = () => sum((S.state.holdings || []).filter((h) => h.value != null), (h) => h.value);
+
+function holdingForm(h = {}) {
+  return `
+    <div class="form-row" style="margin-top:6px">
+      <label style="flex:1;min-width:180px">Navn<input type="text" id="hName" value="${esc(h.name || '')}" placeholder="fx Sparindex Globale Aktier"></label>
+      <label title="Symbol hos Alpha Vantage, fx VWCE.DEX eller AAPL. Tomt = du skriver selv kursen">Symbol<input type="text" id="hTicker" value="${esc(h.ticker || '')}" placeholder="valgfrit" style="width:120px"></label>
+      <label>Antal<input type="number" step="any" id="hQty" value="${h.quantity ?? ''}" style="width:100px"></label>
+      <label title="Det samlede beløb, du har købt for (anskaffelsesværdi i kr.)">Købt for i alt (kr.)<input type="number" step="any" id="hCost" value="${h.cost ?? ''}" style="width:130px"></label>
+      <label>Valuta<select id="hCur">${CURRENCIES.map((c) => `<option ${c === (h.currency || 'DKK') ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label>Konto<input type="text" id="hAcc" list="accList" value="${esc(h.account || '')}" placeholder="fx Aktiesparekonto" style="width:150px"></label>
+      <label title="Bruges i stedet for kursen fra Alpha Vantage – fx for danske investeringsforeninger">Egen kurs<input type="number" step="any" id="hManual" value="${h.manualPrice ?? ''}" placeholder="valgfri" style="width:100px"></label>
+    </div>
+    <datalist id="accList">${ACCOUNTS.map((a) => `<option>${a}</option>`).join('')}</datalist>`;
+}
+
+function readHoldingForm() {
+  return { name: $('#hName').value.trim(), ticker: $('#hTicker').value.trim(), quantity: $('#hQty').value, cost: $('#hCost').value, currency: $('#hCur').value, account: $('#hAcc').value.trim(), manualPrice: $('#hManual').value };
+}
+
+async function refreshHoldings(force) {
+  PT.refreshing = true;
+  if (location.hash === '#portefolje') render();
+  try {
+    const r = await api('POST', '/api/holdings/refresh', { force });
+    PT.errors = r.errors;
+  } catch (e) {
+    PT.errors = [e.message];
+  }
+  PT.refreshing = false;
+  await refresh();
+  if (location.hash === '#portefolje') render();
+}
 
 function viewPortfolio(el) {
-  const b = S.bt;
-  const total = sum(b.holdings, (h) => Number(h.weight) || 0);
-  const saved = S.state.portfolios;
-  const avg = S.txs.length ? avgStats(addMonths(lastFullMonth(), 1), 3) : null;
-  const surplus = avg ? Math.max(0, Math.round((avg.income - avg.spend) / 100) * 100) : null;
+  const hs = S.state.holdings || [];
+  const valued = hs.filter((h) => h.value != null);
+  const total = sum(valued, (h) => h.value);
+  const withCost = valued.filter((h) => h.cost);
+  const cost = sum(withCost, (h) => h.cost);
+  const gain = sum(withCost, (h) => h.value) - cost;
+  const today = sum(valued.filter((h) => h.priceSource === 'alphavantage' && h.changePct), (h) => h.value - h.value / (1 + h.changePct / 100));
+  const updated = S.state.pricesUpdated;
+  const stale = hs.some((h) => h.ticker && h.manualPrice == null) && (!updated || Date.now() - Date.parse(updated) > 12 * 3600 * 1000);
+  if (stale && !PT.refreshing && !PT.autoTried) { PT.autoTried = true; refreshHoldings(false); }
+
+  const priceCell = (h) => {
+    if (h.price == null) return `<span class="muted">${h.ticker ? 'mangler kurs' : 'skriv kurs'}</span>`;
+    const src = h.priceSource === 'manual' ? `egen kurs${h.manualDate ? ' · ' + dateShort(h.manualDate) : ''}` : `${esc(h.ticker)}${h.priceDate ? ' · ' + dateShort(h.priceDate) : ''}`;
+    return `${fmt(h.price, 2)} ${h.currency}<div class="muted" style="font-size:12px">${src}</div>`;
+  };
+  const gainCell = (h) => (h.gain == null ? '<span class="muted">–</span>'
+    : `<span class="${signClass(h.gain)}">${h.gain >= 0 ? '+' : '−'}${kr(Math.abs(h.gain))}</span><div class="muted" style="font-size:12px">${h.gain >= 0 ? '+' : '−'}${fmt(Math.abs(h.gain / h.cost) * 100, 1)} %</div>`);
+  const sorted = [...hs].sort((a, b) => (b.value || 0) - (a.value || 0));
 
   el.innerHTML = `
-    <div class="head"><div><h2>Portefølje-test</h2><div class="sub">Byg kombinationer og se, hvordan de historisk ville have klaret sig – omregnet til kroner</div></div></div>
-    ${!S.state.hasPriceKey ? `<div class="banner"><b>Kursdata mangler:</b> Tilføj en gratis nøgle fra <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">Alpha Vantage</a> som <code>ALPHAVANTAGE_API_KEY</code> i <code>.env</code> og genstart. Indtil da virker kun faste afkast (lejlighed, kunst) og egne uploadede kursserier.</div>` : ''}
+    <div class="head">
+      <div><h2>Portefølje</h2><div class="sub">Dine beholdninger med løbende kurser${updated ? ` · kurser hentet ${dateShort(updated.slice(0, 10))} kl. ${updated.slice(11, 16)}` : ''}</div></div>
+      <div class="actions">${hs.some((h) => h.ticker && h.manualPrice == null) ? `<button class="btn" id="pRefresh" ${PT.refreshing ? 'disabled' : ''}>${PT.refreshing ? 'Henter kurser …' : 'Opdatér kurser'}</button>` : ''}</div>
+    </div>
+    ${PT.errors.length ? `<div class="banner">${PT.errors.map(esc).join('<br>')}</div>` : ''}
+    ${!S.state.hasPriceKey && hs.some((h) => h.ticker && h.manualPrice == null) ? `<div class="banner"><b>Kurser kan ikke hentes:</b> tilføj en gratis nøgle fra <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">Alpha Vantage</a> som <code>ALPHAVANTAGE_API_KEY</code> i <code>.env</code> og genstart – eller skriv selv kursen.</div>` : ''}
+    <div class="grid kpis">
+      <div class="card kpi"><div class="label">Samlet værdi</div><div class="value">${kr(total)}</div><div class="delta">${hs.length} ${hs.length === 1 ? 'beholdning' : 'beholdninger'}${valued.length < hs.length ? ` · ${hs.length - valued.length} uden kurs` : ''}</div></div>
+      <div class="card kpi"><div class="label">Afkast i alt</div><div class="value ${signClass(gain)}">${withCost.length ? `${gain >= 0 ? '+' : '−'}${kr(Math.abs(gain))}` : '–'}</div><div class="delta">${cost ? `${gain >= 0 ? '+' : '−'}${fmt(Math.abs(gain / cost) * 100, 1)} % af ${kr(cost)} købt for` : 'udfyld "købt for" for at se afkast'}</div></div>
+      <div class="card kpi"><div class="label">Seneste handelsdag</div><div class="value ${signClass(today)}">${today ? `${today >= 0 ? '+' : '−'}${kr(Math.abs(today))}` : '–'}</div><div class="delta">${today ? 'for beholdninger med kurs fra Alpha Vantage' : 'kun for beholdninger med symbol'}</div></div>
+    </div>
     <div class="grid cols-3-2">
-      <div class="card">
-        <div class="form-row" style="justify-content:space-between;align-items:center">
-          <input type="text" id="pName" value="${esc(b.name)}" style="font-weight:600;flex:1">
-          <span class="${Math.abs(total - 100) < 0.01 ? 'pos' : 'neg'}" style="font-weight:600">${fmt(total, 0)} %</span>
-        </div>
-        <div style="margin-top:12px">
-          ${b.holdings.map((h, i) => `<div class="holding">
-            <div style="min-width:0"><div class="tk">${esc(h.ticker)}</div><div class="nm" title="${esc(h.name || '')}">${esc(h.name || '')}${h.currency ? ' · ' + h.currency : ''}</div></div>
-            <input type="number" value="${h.weight}" data-w="${i}" style="text-align:right" aria-label="Vægt i procent">
-            <span class="muted">%</span>
-            <button class="btn small ghost danger" data-rm="${i}" title="Fjern">✕</button>
-          </div>`).join('') || '<p class="muted">Tilføj aktiver herunder, eller start fra et eksempel.</p>'}
-        </div>
-        <div style="margin-top:12px;position:relative">
-          <input type="search" id="tSearch" placeholder="Søg fond/ETF/aktie (fx MSCI World, Novo, VT)…" style="width:100%">
-          <div id="tResults"></div>
-        </div>
-        <div class="filters" style="margin-top:10px">
-          <button class="btn small" id="addFixed">+ Fast afkast (fx bolig)</button>
-          <button class="btn small" id="addMine" ${S.state.assets.some((a) => a.expectedReturn != null) ? '' : 'disabled'} title="Tilføjer aktiver med forventet afkast (angives under Formue)">+ Min formue (bolig, kunst …)</button>
-          ${S.state.customSeries.map((c) => `<button class="btn small" data-custom="${c.id}">+ ${esc(c.name)}</button>`).join('')}
-        </div>
-        <div class="filters" style="margin-top:4px">
-          <button class="btn small" id="even" ${b.holdings.length ? '' : 'disabled'}>Fordel ligeligt</button>
-          <button class="btn small" id="norm" ${b.holdings.length && Math.abs(total - 100) > 0.01 ? '' : 'disabled'}>Skalér til 100 %</button>
-          <span style="flex:1"></span>
-          <button class="btn small" id="pNew">Ny</button>
-          <button class="btn small primary" id="pSave" ${b.holdings.length ? '' : 'disabled'}>${b.id ? 'Gem ændringer' : 'Gem portefølje'}</button>
-        </div>
-        <details style="margin-top:10px"><summary>Lærebogseksempler at starte fra</summary>
-          <p class="hint" style="margin-top:6px">Klassiske, generelle sammensætninger brugt i undervisning – ikke personlige anbefalinger.</p>
-          <div class="filters">${PRESETS.map((p, i) => `<button class="btn small" data-preset="${i}">${esc(p.name)}</button>`).join('')}</div>
-        </details>
-      </div>
-
       <div class="stack">
         <div class="card">
-          <h3>Gemte porteføljer</h3>
-          <p class="hint">Markér op til 4 for at sammenligne dem.</p>
-          ${saved.length ? saved.map((p) => `<div class="filters" style="margin-bottom:6px">
-            <label style="display:flex;gap:8px;align-items:center;flex:1;min-width:0"><input type="checkbox" data-cmp="${p.id}" ${b.compare.has(p.id) ? 'checked' : ''}> <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.name)}</span></label>
-            <span class="muted" style="font-size:12px">${p.holdings.map((h) => h.ticker.replace(/^EGEN:.*/, 'egen')).join(' · ')}</span>
-            <button class="btn small ghost" data-load="${p.id}">Åbn</button>
-            <button class="btn small ghost danger" data-pdel="${p.id}" title="Slet">✕</button>
-          </div>`).join('') : '<p class="muted">Ingen gemte endnu.</p>'}
+          <h3>Beholdninger</h3>
+          <p class="hint">Tryk på en beholdning for at rette antal, købspris eller kurs.</p>
+          ${hs.length ? `<div class="table-wrap"><table class="holdings">
+            <thead><tr><th>Beholdning</th><th class="num">Antal</th><th class="num">Kurs</th><th class="num">Værdi</th><th class="num">Afkast</th><th class="num">Andel</th></tr></thead>
+            <tbody>${sorted.map((h) => PT.editing === h.id ? `<tr><td colspan="6">${holdingForm(h)}
+                <p style="margin:10px 0 4px"><button class="btn primary" id="hSave">Gem</button> <button class="btn" id="hCancel">Annullér</button> <button class="btn ghost danger" id="hDel">Slet</button></p></td></tr>` : `
+              <tr data-h="${h.id}" style="cursor:pointer">
+                <td class="text"><b>${esc(h.name)}</b><div class="muted" style="font-size:12px">${[h.ticker, h.account].filter(Boolean).map(esc).join(' · ') || '&nbsp;'}</div></td>
+                <td class="num">${fmt(h.quantity, h.quantity % 1 ? 2 : 0)}</td>
+                <td class="num">${priceCell(h)}</td>
+                <td class="num"><b>${h.value != null ? kr(h.value) : '–'}</b></td>
+                <td class="num">${gainCell(h)}</td>
+                <td class="num">${h.value != null && total ? pct(h.value / total, 0) : '–'}</td>
+              </tr>`).join('')}</tbody></table></div>` : '<p class="muted">Ingen beholdninger endnu. Tilføj dem nedenfor – fx fra din oversigt i Nordnet.</p>'}
         </div>
         <div class="card">
-          <h3>Forudsætninger</h3>
-          <div class="form-row" style="margin-top:10px">
-            <label>Periode<select id="bYears">${[['5', '5 år'], ['10', '10 år'], ['15', '15 år'], ['20', '20 år'], ['max', 'Længst mulig']].map(([v, l]) => `<option value="${v}" ${v === b.years ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-            <label>Startbeløb<input type="number" id="bInit" value="${b.initial}" style="width:120px"></label>
-            <label>Indskud pr. md.<input type="number" id="bMonthly" value="${b.monthly}" style="width:110px"></label>
-          </div>
-          <div style="margin-top:10px">
-            ${b.extra.map((e, i) => `<div class="form-row" style="margin-bottom:6px">
-              <label>Engangsindskud<input type="number" value="${e.amount}" data-ex="${i}" data-exk="amount" style="width:120px"></label>
-              <label>efter antal mdr.<input type="number" min="1" value="${e.after}" data-ex="${i}" data-exk="after" style="width:80px"></label>
-              <button class="btn small ghost danger" data-exrm="${i}" title="Fjern">✕</button>
-            </div>`).join('')}
-            <button class="btn small" id="exAdd">+ Engangsindskud</button>
-          </div>
-          ${surplus ? `<p class="hint" style="margin:6px 0 0">Dit gennemsnitlige overskud de seneste ${avg.n} mdr. er ${kr(surplus)}. <a href="#" id="useSurplus">Brug som indskud</a></p>` : ''}
-          <div class="form-row" style="margin-top:10px">
-            <label>Rebalancering<select id="bReb"><option value="yearly" ${b.rebalance === 'yearly' ? 'selected' : ''}>Årligt</option><option value="monthly" ${b.rebalance === 'monthly' ? 'selected' : ''}>Månedligt</option><option value="none" ${b.rebalance === 'none' ? 'selected' : ''}>Aldrig</option></select></label>
-            <label>Sammenlign med<input type="text" id="bBench" value="${esc(b.benchmark)}" style="width:110px" placeholder="fx VT"></label>
-          </div>
-          <p style="margin:14px 0 0"><button class="btn primary" id="run" ${b.holdings.length || b.compare.size ? '' : 'disabled'}>Kør backtest</button> <span class="muted" id="runInfo"></span></p>
+          <h3>Tilføj beholdning</h3>
+          ${PT.editing === 'new' ? `
+            ${S.state.hasPriceKey ? `<div class="form-row"><label style="flex:1">Søg efter papir hos Alpha Vantage<input type="text" id="hSearch" placeholder="fx Vanguard All-World eller Apple"></label><button class="btn" id="hSearchBtn">Søg</button></div>
+            <div id="hResults">${PT.results.map((r, i) => `<button class="btn small" data-res="${i}" style="margin:6px 6px 0 0">${esc(r.symbol)} · ${esc(r.name)} (${esc(r.currency)})</button>`).join('')}</div>` : ''}
+            ${holdingForm({ account: 'Aktiesparekonto' })}
+            <p style="margin:10px 0 0"><button class="btn primary" id="hSave">Tilføj</button> <button class="btn" id="hCancel">Annullér</button></p>
+            <p class="hint" style="margin:10px 0 0">Har papiret et symbol hos Alpha Vantage, hentes kursen automatisk (gemmes i 12 timer, 25 opslag i døgnet). Danske investeringsforeninger findes sjældent – skriv da selv kursen, og opdatér den, når du har lyst.</p>`
+            : '<p style="margin:8px 0 0"><button class="btn primary" id="hNew">+ Ny beholdning</button></p>'}
         </div>
       </div>
-    </div>
-    <div id="btOut"></div>
-    <details class="card" style="margin-top:16px">
-      <summary>Upload egen kursserie (fx dansk investeringsforening eller boligprisindeks)</summary>
-      <p class="hint" style="margin-top:8px">CSV med én række pr. dato: <code>dato;kurs</code>. Hent fx kurshistorik fra fondens hjemmeside eller boligpriser fra Danmarks Statistik.</p>
-      <div class="form-row">
-        <label>Navn<input type="text" id="sName" placeholder="fx Sparinvest Index Globale Aktier"></label>
-        <label>Valuta<select id="sCur"><option>DKK</option><option>EUR</option><option>USD</option><option>SEK</option><option>NOK</option><option>GBP</option></select></label>
-        <label>Fil<input type="file" id="sFile" accept=".csv,.txt"></label>
-        <button class="btn" id="sUp">Upload</button>
+      <div class="stack">
+        <div class="card"><h3>Fordeling</h3><p class="hint">Værdi pr. beholdning</p><div class="chart"><canvas id="cHold"></canvas></div></div>
+        <div class="card"><h3>Fordeling pr. konto</h3><div class="chart short"><canvas id="cAcc"></canvas></div></div>
+        <div class="card"><h3>Værdi over tid</h3><p class="hint">Én måling pr. dag, når kurserne opdateres</p><div class="chart short"><canvas id="cPHist"></canvas></div><p class="muted" id="pHistEmpty" hidden>Udviklingen vises, når der er målinger fra mindst to dage.</p></div>
       </div>
-      ${S.state.customSeries.length ? `<p class="hint" style="margin-top:10px">Uploadet: ${S.state.customSeries.map((c) => `${esc(c.name)} (${c.months} mdr. fra ${c.from}) <a href="#" data-sdel="${c.id}">slet</a>`).join(' · ')}</p>` : ''}
-    </details>`;
+    </div>`;
 
-  const keep = () => {
-    b.name = $('#pName').value;
-    b.years = $('#bYears').value;
-    b.initial = Number($('#bInit').value) || 0;
-    b.monthly = Number($('#bMonthly').value) || 0;
-    b.rebalance = $('#bReb').value;
-    b.benchmark = $('#bBench').value.trim();
-  };
-  const rerender = () => { keep(); render(); };
-  $$('#pName, #bYears, #bInit, #bMonthly, #bReb, #bBench').forEach((i) => (i.onchange = keep));
-  $$('[data-w]').forEach((i) => (i.onchange = () => { b.holdings[i.dataset.w].weight = Number(i.value) || 0; rerender(); }));
-  $$('[data-rm]').forEach((x) => (x.onclick = () => { b.holdings.splice(Number(x.dataset.rm), 1); rerender(); }));
-  $$('[data-preset]').forEach((x) => (x.onclick = () => { const p = PRESETS[x.dataset.preset]; keep(); Object.assign(b, { name: p.name, holdings: structuredClone(p.holdings), id: null }); render(); }));
-  $$('[data-custom]').forEach((x) => (x.onclick = () => { const c = S.state.customSeries.find((s) => s.id === x.dataset.custom); b.holdings.push({ ticker: 'EGEN:' + c.id, name: c.name, weight: 0 }); rerender(); }));
-  $('#addFixed').onclick = () => {
-    const r = prompt('Fast årligt afkast i procent (fx 3 for en lejlighed med forventet 3 % værdistigning):', '3');
-    if (r == null || isNaN(Number(r.replace(',', '.')))) return;
-    const v = Number(r.replace(',', '.'));
-    b.holdings.push({ ticker: `FAST:${v}`, name: `Fast afkast ${fmt(v, 1)} % p.a.`, weight: 0 });
-    rerender();
-  };
-  $('#addMine').onclick = () => {
-    // Formuens aktiver med forventet afkast, vægtet efter nettoværdi. Depoter o.l. uden forventet
-    // afkast springes over – dem modellerer man bedre med de faktiske fonde.
-    const list = S.state.assets.filter((a) => a.value - (a.debt || 0) > 0 && a.expectedReturn != null);
-    const skipped = S.state.assets.filter((a) => a.expectedReturn == null).map((a) => a.name);
-    const tot = sum(list, (a) => a.value - (a.debt || 0));
-    for (const a of list) {
-      b.holdings.push({ ticker: `FAST:${a.expectedReturn}`, name: `${a.name} (${fmt(a.expectedReturn, 1)} % p.a.)`, weight: Math.round(((a.value - (a.debt || 0)) / tot) * 100) });
-    }
-    rerender();
-    toast(list.length ? `Tilføjet med vægt efter nettoværdi.${skipped.length ? ` Uden forventet afkast (sprunget over): ${esc(skipped.join(', '))} – tilføj de faktiske fonde i stedet.` : ''}` : 'Ingen aktiver har et forventet afkast. Angiv det under Formue.', [], 9000);
-  };
-  $('#even').onclick = () => { const w = Math.round((100 / b.holdings.length) * 100) / 100; b.holdings.forEach((h) => (h.weight = w)); rerender(); };
-  $('#norm').onclick = () => { b.holdings.forEach((h) => (h.weight = Math.round((h.weight / total) * 10000) / 100)); rerender(); };
-  $('#pNew').onclick = () => { Object.assign(b, { name: 'Min portefølje', holdings: [], id: null }); render(); };
-  $('#pSave').onclick = async () => {
-    keep();
-    const body = { name: b.name, holdings: b.holdings };
-    const p = b.id ? await api('PUT', `/api/portfolios/${b.id}`, body) : await api('POST', '/api/portfolios', body);
-    b.id = p.id;
-    if (b.compare.size < 4) b.compare.add(p.id);
+  $$('[data-h]').forEach((r) => (r.onclick = () => { PT.editing = r.dataset.h; render(); }));
+  if ($('#hNew')) $('#hNew').onclick = () => { PT.editing = 'new'; PT.results = []; render(); };
+  if ($('#hCancel')) $('#hCancel').onclick = () => { PT.editing = null; render(); };
+  if ($('#pRefresh')) $('#pRefresh').onclick = () => refreshHoldings(true);
+  if ($('#hDel')) $('#hDel').onclick = async () => {
+    if (!confirm('Slet beholdningen?')) return;
+    await api('DELETE', `/api/holdings/${PT.editing}`);
+    PT.editing = null;
     await refresh();
     render();
-    toast('Porteføljen er gemt.');
   };
-  $$('[data-load]').forEach((x) => (x.onclick = () => { const p = saved.find((s) => s.id === x.dataset.load); keep(); Object.assign(b, { name: p.name, holdings: structuredClone(p.holdings), id: p.id }); render(); }));
-  $$('[data-pdel]').forEach((x) => (x.onclick = async () => { if (!confirm('Slet porteføljen?')) return; await api('DELETE', `/api/portfolios/${x.dataset.pdel}`); b.compare.delete(x.dataset.pdel); if (b.id === x.dataset.pdel) b.id = null; await refresh(); render(); }));
-  $$('[data-cmp]').forEach((x) => (x.onchange = () => {
-    if (x.checked && b.compare.size >= 4) { x.checked = false; return toast('Højst 4 porteføljer ad gangen'); }
-    x.checked ? b.compare.add(x.dataset.cmp) : b.compare.delete(x.dataset.cmp);
-    rerender();
-  }));
-  $$('[data-ex]').forEach((i) => (i.onchange = () => { b.extra[i.dataset.ex][i.dataset.exk] = Number(i.value) || 0; }));
-  $$('[data-exrm]').forEach((x) => (x.onclick = () => { keep(); b.extra.splice(Number(x.dataset.exrm), 1); render(); }));
-  $('#exAdd').onclick = () => { keep(); b.extra.push({ amount: 100000, after: 12 }); render(); };
-  if ($('#useSurplus')) $('#useSurplus').onclick = (e) => { e.preventDefault(); $('#bMonthly').value = surplus; keep(); };
-
-  let timer;
-  $('#tSearch').oninput = (e) => {
-    clearTimeout(timer);
-    const q = e.target.value.trim();
-    const box = $('#tResults');
-    if (q.length < 2) { box.innerHTML = ''; return; }
-    timer = setTimeout(async () => {
-      try {
-        const res = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
-        const direct = /^[A-Z0-9.^=-]{1,15}$/i.test(q) ? [{ symbol: q.toUpperCase(), name: 'Brug symbolet direkte', exchange: '' }] : [];
-        const all = [...res, ...direct.filter((d) => !res.some((r) => r.symbol === d.symbol))];
-        box.innerHTML = `<div class="search-results">${all.map((r, i) => `<button data-pick="${i}"><b>${esc(r.symbol)}</b> <span class="muted">${esc(r.name)} · ${esc(r.exchange || '')}${r.currency ? ' · ' + esc(r.currency) : ''}</span></button>`).join('') || '<div class="muted" style="padding:8px">Ingen resultater</div>'}</div>`;
-        $$('[data-pick]', box).forEach((x) => (x.onclick = () => {
-          const r = all[x.dataset.pick];
-          b.holdings.push({ ticker: r.symbol, name: r.name === 'Brug symbolet direkte' ? '' : r.name, currency: r.currency || undefined, weight: 0 });
-          rerender();
-        }));
-      } catch (err) {
-        box.innerHTML = `<div class="search-results"><div class="muted" style="padding:8px">${esc(err.message)}</div></div>`;
-      }
-    }, 350);
-  };
-
-  $('#sUp').onclick = async () => {
-    const file = $('#sFile').files[0];
-    if (!file) return toast('Vælg en fil');
+  if ($('#hSave')) $('#hSave').onclick = async () => {
+    const body = readHoldingForm();
+    if (!body.name && !body.ticker) return toast('Skriv et navn eller et symbol');
+    $('#hSave').disabled = true;
     try {
-      const r = await api('POST', '/api/series', { name: $('#sName').value || file.name.replace(/\.\w+$/, ''), currency: $('#sCur').value, text: await readText(file) });
-      await refresh(); render();
-      toast(`${esc(r.name)}: ${r.months} måneder indlæst.`);
-    } catch (e) { toast(esc(e.message)); }
-  };
-  $$('[data-sdel]').forEach((x) => (x.onclick = async (e) => { e.preventDefault(); await api('DELETE', `/api/series/${x.dataset.sdel}`); await refresh(); render(); }));
-
-  $('#run').onclick = async () => {
-    keep();
-    const ports = [];
-    if (b.holdings.length && !(b.id && b.compare.has(b.id))) ports.push({ name: b.name + (b.id ? '' : ' (ikke gemt)'), holdings: b.holdings });
-    for (const id of b.compare) { const p = saved.find((s) => s.id === id); if (p) ports.push({ name: p.name, holdings: id === b.id ? b.holdings : p.holdings }); }
-    if (ports.some((p) => Math.abs(sum(p.holdings, (h) => Number(h.weight)) - 100) > 0.5)) toast('Bemærk: vægtene summerer ikke til 100 % – de skaleres automatisk.');
-    $('#runInfo').textContent = 'Henter kurser og regner …';
-    $('#run').disabled = true;
-    try {
-      b.result = await api('POST', '/api/backtest', { portfolios: ports.slice(0, 4), benchmark: b.benchmark || null, years: b.years, initial: b.initial, monthly: b.monthly, extra: b.extra, rebalance: b.rebalance });
-      $('#runInfo').textContent = '';
-      renderBacktest();
+      const r = PT.editing === 'new' ? await api('POST', '/api/holdings', body) : await api('PUT', `/api/holdings/${PT.editing}`, body);
+      PT.errors = r.errors;
+      PT.editing = null;
     } catch (e) {
-      $('#runInfo').innerHTML = `<span class="neg">${esc(e.message)}</span>`;
-    } finally {
-      $('#run').disabled = false;
+      toast(esc(e.message));
     }
+    await refresh();
+    render();
   };
-  if (b.result) renderBacktest();
-}
-
-function renderBacktest() {
-  const r = S.bt.result;
-  const all = [...r.results, ...(r.benchmark ? [{ ...r.benchmark, name: `Sammenligning: ${r.benchmark.ticker}`, isBench: true }] : [])];
-  const color = (i, x) => (x.isBench ? css('--muted') : series(i));
-  const m = (x) => x.metrics;
-  const row = (label, f, cls) => `<tr><td class="muted">${label}</td>${all.map((x) => `<td class="num ${cls ? cls(x) : ''}">${f(x)}</td>`).join('')}</tr>`;
-
-  $('#btOut').innerHTML = `
-    <div class="card" style="margin-top:16px">
-      <h3>Resultat ${monthLabel(r.from)} – ${monthLabel(r.to)}</h3>
-      <p class="hint">${r.months} måneder · alle beløb i DKK · før skat og handelsomkostninger${r.limitedBy ? ` · perioden er afkortet, fordi ${esc(r.limitedBy.symbol)} kun har data fra ${monthLabel(r.limitedBy.from)}` : ''}</p>
-      <div class="table-wrap"><table>
-        <thead><tr><th></th>${all.map((x, i) => `<th class="num"><i class="swatch" style="background:${color(i, x)}"></i>${esc(x.name)}</th>`).join('')}</tr></thead>
-        <tbody>
-          ${row('Slutværdi', (x) => kr(m(x).finalValue))}
-          ${row('Indskudt i alt', (x) => kr(m(x).contributed))}
-          ${row('Gevinst', (x) => kr(m(x).gain), (x) => signClass(m(x).gain))}
-          ${row('Årligt afkast (CAGR)', (x) => pct(m(x).cagr), (x) => signClass(m(x).cagr))}
-          ${row('Udsving (volatilitet p.a.)', (x) => pct(m(x).volatility))}
-          ${row('Største fald fra top', (x) => pct(m(x).maxDrawdown), () => 'neg')}
-          ${row('Afkast pr. risiko', (x) => (m(x).ratio == null ? '–' : fmt(m(x).ratio, 2)))}
-          ${row('Bedste år', (x) => (m(x).best ? `${pct(m(x).best.return, 0)} (${m(x).best.year})` : '–'))}
-          ${row('Værste år', (x) => (m(x).worst ? `${pct(m(x).worst.return, 0)} (${m(x).worst.year})` : '–'))}
-        </tbody>
-      </table></div>
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h3>Værdi over tid</h3>
-      <p class="hint">Med startbeløb, månedlige indskud og engangsindskud · stiplet grå = indskudt beløb</p>
-      <div class="legend">${all.map((x, i) => `<span><i class="swatch" style="background:${color(i, x)}"></i>${esc(x.name)}</span>`).join('')}</div>
-      <div class="chart tall"><canvas id="cBtVal"></canvas></div>
-    </div>
-    <div class="grid cols-2" style="margin-top:16px">
-      <div class="card"><h3>Fald fra seneste top</h3><p class="hint">Hvor dybt og hvor længe porteføljen var under sit tidligere højdepunkt</p><div class="chart"><canvas id="cBtDD"></canvas></div></div>
-      <div class="card"><h3>Afkast pr. kalenderår</h3><p class="hint">Første og sidste år kan være delvise</p><div class="chart"><canvas id="cBtYr"></canvas></div></div>
-    </div>
-    ${r.correlation.assets.length > 1 ? `<div class="card" style="margin-top:16px">
-      <h3>Hvor ens bevæger aktiverne sig?</h3>
-      <p class="hint">Korrelation af månedsafkast: 1 = følges ad, 0 = uafhængige, −1 = modsat. Lav korrelation giver mere spredning.</p>
-      <div class="table-wrap"><table class="heat"><thead><tr><th></th>${r.correlation.assets.map((a) => `<th class="num">${esc(a)}</th>`).join('')}</tr></thead>
-      <tbody>${r.correlation.matrix.map((row, i) => `<tr><th>${esc(r.correlation.assets[i])}</th>${row.map((v) => `<td style="background:${corrColor(v)};color:${Math.abs(v) > 0.55 ? '#fff' : 'inherit'}">${fmt(v, 2)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>
-    </div>` : ''}
-    <p class="hint" style="margin-top:12px">Historiske afkast er ingen garanti for fremtidige. Faste afkast (fx bolig) har intet udsving i modellen og får derfor porteføljen til at se mere stabil ud, end den er. Dansk beskatning (lager-/realisationsbeskatning, aktiesparekonto, pension) er ikke medregnet.</p>`;
-
-  const labels = all[0].points.map((p) => shortMonth(p.month));
-  const opts = baseOptions({ legend: false });
-  chart('cBtVal', {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        ...all.map((x, i) => ({ label: x.name, data: x.points.map((p) => p.value), ...lineStyle(color(i, x), x.isBench ? { borderDash: [5, 4] } : {}) })),
-        { label: 'Indskudt', data: all[0].points.map((p) => p.contributed), ...lineStyle(css('--axis'), { borderDash: [2, 3], borderWidth: 1.5 }) },
-      ],
-    },
-    options: opts,
-  });
-  chart('cBtDD', {
-    type: 'line',
-    data: { labels, datasets: all.map((x, i) => ({ label: x.name, data: x.metrics.drawdown.map((d) => d.dd), ...lineStyle(color(i, x), x.isBench ? { borderDash: [5, 4] } : {}) })) },
-    options: (() => { const o = baseOptions({ percent: true }); o.scales.y.max = 0; return o; })(),
-  });
-  const years = all[0].metrics.annual.map((a) => a.year);
-  chart('cBtYr', {
-    type: 'bar',
-    data: { labels: years, datasets: all.map((x, i) => ({ label: x.name, data: x.metrics.annual.map((a) => a.return), ...barStyle(color(i, x)), borderSkipped: false })) },
-    options: baseOptions({ percent: true }),
-  });
-}
-
-// Divergerende skala: rød (negativ) – grå – blå (positiv)
-function corrColor(v) {
-  const t = Math.max(-1, Math.min(1, v));
-  const mid = css('--neutral-mid');
-  const pole = t >= 0 ? '#2a78d6' : '#d03b3b';
-  const a = Math.abs(t);
-  const mix = (c1, c2) => {
-    const p = (c, i) => parseInt(c.slice(1 + i * 2, 3 + i * 2), 16);
-    return `rgb(${[0, 1, 2].map((i) => Math.round(p(c1, i) * (1 - a) + p(c2, i) * a)).join(',')})`;
+  const doSearch = async () => {
+    const q = $('#hSearch').value.trim();
+    if (q.length < 2) return;
+    $('#hSearchBtn').disabled = true;
+    try { PT.results = (await api('GET', `/api/search?q=${encodeURIComponent(q)}`)).slice(0, 8); } catch (e) { toast(esc(e.message)); PT.results = []; }
+    $('#hResults').innerHTML = PT.results.length ? PT.results.map((r, i) => `<button class="btn small" data-res="${i}" style="margin:6px 6px 0 0">${esc(r.symbol)} · ${esc(r.name)} (${esc(r.currency)})</button>`).join('') : '<p class="muted">Ingen fund.</p>';
+    $('#hSearchBtn').disabled = false;
+    bindResults();
   };
-  return mix(mid.startsWith('#') ? mid : '#f0efec', pole);
-}
+  const bindResults = () => $$('[data-res]').forEach((b) => (b.onclick = () => {
+    const r = PT.results[b.dataset.res];
+    $('#hTicker').value = r.symbol;
+    if (!$('#hName').value) $('#hName').value = r.name;
+    const cur = r.symbol.endsWith('.LON') ? 'GBX' : r.currency;
+    if (CURRENCIES.includes(cur)) $('#hCur').value = cur;
+  }));
+  if ($('#hSearchBtn')) {
+    $('#hSearchBtn').onclick = doSearch;
+    $('#hSearch').onkeydown = (e) => { if (e.key === 'Enter') doSearch(); };
+    bindResults();
+  }
 
-// ---------- Indstillinger ----------
+  if (valued.length) {
+    const top = [...valued].sort((a, b) => b.value - a.value);
+    const shown = top.slice(0, 8);
+    const rest = sum(top.slice(8), (h) => h.value);
+    const labels = [...shown.map((h) => h.name), ...(rest ? ['Øvrige'] : [])];
+    const vals = [...shown.map((h) => h.value), ...(rest ? [rest] : [])];
+    const tip = { callbacks: { label: (c) => ` ${kr(c.parsed.x)} (${pct(c.parsed.x / total, 0)})` } };
+    const opts = baseOptions({ horizontal: true });
+    chart('cHold', { type: 'bar', data: { labels, datasets: [{ label: 'Værdi', data: vals, ...barStyle(series(0)) }] }, options: { ...opts, plugins: { ...opts.plugins, tooltip: { ...opts.plugins.tooltip, ...tip } } } });
+    const byAcc = Object.entries(valued.reduce((a, h) => ((a[h.account || 'Uden konto'] = (a[h.account || 'Uden konto'] || 0) + h.value), a), {})).sort((a, b) => b[1] - a[1]);
+    chart('cAcc', { type: 'bar', data: { labels: byAcc.map((x) => x[0]), datasets: [{ label: 'Værdi', data: byAcc.map((x) => x[1]), ...barStyle(series(2)) }] }, options: { ...opts, plugins: { ...opts.plugins, tooltip: { ...opts.plugins.tooltip, ...tip } } } });
+  } else {
+    $('#cHold').closest('.card').hidden = true;
+    $('#cAcc').closest('.card').hidden = true;
+  }
+  const hist = S.state.portfolioHistory || [];
+  if (hist.length >= 2) {
+    chart('cPHist', {
+      type: 'line',
+      data: {
+        labels: hist.map((p) => dateShort(p.date)),
+        datasets: [
+          { label: 'Værdi', data: hist.map((p) => p.value), ...lineStyle(series(0)) },
+          { label: 'Købt for', data: hist.map((p) => p.cost), ...lineStyle(css('--axis'), { borderDash: [4, 4], borderWidth: 1.5 }) },
+        ],
+      },
+      options: baseOptions({ legend: true }),
+    });
+  } else {
+    $('#cPHist').parentElement.hidden = true;
+    $('#pHistEmpty').hidden = false;
+  }
+}
 
 async function readText(file) {
   const buf = await file.arrayBuffer();
@@ -1610,9 +1504,9 @@ function viewSettings(el) {
         </div>
 
         <div class="card">
-          <h3>Kursdata til portefølje-test</h3>
+          <h3>Kurser til porteføljen</h3>
           <p>${st.hasPriceKey ? '<span class="pos">✓ Alpha Vantage-nøgle fundet.</span>' : '<span class="neg">Ingen nøgle.</span> Hent en gratis på <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener">alphavantage.co</a> og sæt den i <code>.env</code> som <code>ALPHAVANTAGE_API_KEY</code>.'}</p>
-          <p class="hint">Gratisnøglen giver 25 opslag i døgnet. Hentede kurser gemmes lokalt i 3 dage.</p>
+          <p class="hint">Gratisnøglen giver 25 opslag i døgnet. Hentede kurser gemmes lokalt i 12 timer, og kurser, du selv skriver, kræver ingen nøgle.</p>
         </div>
 
         <div class="card">
